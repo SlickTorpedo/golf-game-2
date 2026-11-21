@@ -5,6 +5,7 @@ import { buildNav } from '../src/shared/bots';
 import { PENALTY_SCORE, PROTOCOL_VERSION } from '../src/shared/constants';
 import { STADIUM } from '../src/shared/courses';
 import { parseLevel } from '../src/shared/level';
+import { stepBall } from '../src/shared/physics';
 import { Match } from '../src/shared/match';
 import type { ClientMsg, ServerMsg } from '../src/shared/protocol';
 
@@ -70,5 +71,56 @@ describe('room', () => {
     expect(got[0]).toMatchObject({ t: 'welcome', host: true });
     const snap = got.filter((m) => m.t === 'snap').pop();
     expect(snap && snap.t === 'snap' && snap.state.players.length).toBe(3);
+  });
+});
+
+describe('physics', () => {
+  const flat = (tiles: string[]) => parseLevel({ id: 't', name: 't', par: 2, boards: [0, 0], tiles });
+  const roll = (L: ReturnType<typeof flat>, vx: number, max = 600) => {
+    const b = { x: L.tee.x, y: L.tee.y, z: 0, vx, vy: 0, vz: 0 };
+    const seen = { holed: false, oob: false, splash: false, tunnel: false, cone: false };
+    for (let i = 0; i < max; i++) {
+      const r = stepBall(L, b, i);
+      seen.holed ||= r.holed;
+      seen.oob ||= r.oob;
+      seen.splash ||= r.splash;
+      seen.tunnel ||= r.tunnel;
+      seen.cone ||= r.impact > 0 && r.material === 'cone';
+      if (r.holed || r.oob || (b.vx === 0 && b.vy === 0)) break;
+    }
+    return { b, seen };
+  };
+
+  it('a gentle putt drops, a hard one runs over the cup', () => {
+    const L = flat(['#########', '#T..O...#', '#########']);
+    expect(roll(L, 6.5).seen.holed).toBe(true);
+    expect(roll(L, 12).seen.holed).toBe(false);
+  });
+
+  it('water takes the ball', () => {
+    const { seen } = roll(flat(['#######', '#T.~~O#', '#######']), 6);
+    expect(seen.splash).toBe(true);
+  });
+
+  it('the tunnel carries the ball to its other end', () => {
+    const L = flat(['#########', '#T.A#a.O#', '#########']);
+    const { seen, b } = roll(L, 5);
+    expect(seen.tunnel).toBe(true);
+    expect(b.x).toBeGreaterThan(5);
+  });
+
+  it('a cone sends the ball back', () => {
+    const { seen, b } = roll(flat(['#########', '#T..c..O#', '#########']), 6);
+    expect(seen.cone).toBe(true);
+    expect(b.x).toBeLessThan(4.5);
+  });
+
+  it('a turnstile never throws the ball faster than the speed limit or out of the world', () => {
+    const L = flat(['#######', '#.....#', '#T.+.O#', '#.....#', '#######']);
+    for (const v of [2, 5, 9, 12]) {
+      const { b } = roll(L, v, 1200);
+      expect(Number.isFinite(b.x) && Number.isFinite(b.y)).toBe(true);
+      expect(b.x > 0 && b.x < 7 && b.y > 0 && b.y < 5).toBe(true);
+    }
   });
 });

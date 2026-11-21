@@ -51,6 +51,14 @@ button {
   border-radius: 0;
 }
 
+/* Darkened corners, the way a night broadcast camera sees it. */
+#vignette {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at 50% 46%, transparent 52%, rgba(3, 5, 14, 0.55) 100%);
+}
+
 /* ------------------------------------------------------------ name tags */
 
 #labels span {
@@ -260,6 +268,49 @@ button {
 #tools button:hover {
   background: var(--chalk);
   color: var(--ink);
+}
+
+/* Rides beside the pointer while you pull back. */
+#power {
+  width: 130px;
+  transform: translate(22px, 14px);
+  padding: 4px 8px 8px;
+  background: rgba(7, 11, 28, 0.82);
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: 0 8px;
+  pointer-events: none;
+}
+
+#power b {
+  font-size: 38px;
+  font-weight: 800;
+  font-style: italic;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+#power span {
+  font-size: 16px;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+#power i {
+  grid-column: 1 / -1;
+  height: 10px;
+  margin-top: 4px;
+  background: linear-gradient(90deg, var(--chalk) var(--p), rgba(243, 245, 238, 0.18) var(--p));
+  transform: skewX(-12deg);
+}
+
+#power.full b {
+  color: var(--pink);
+}
+
+#power.full i {
+  background: linear-gradient(90deg, var(--pink) var(--p), rgba(243, 245, 238, 0.18) var(--p));
 }
 
 #toast {

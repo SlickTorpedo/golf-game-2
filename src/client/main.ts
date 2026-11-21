@@ -6,13 +6,16 @@ import './styles.css';
 
 import { createLocalPair } from '../net/channel';
 import { Room } from '../server/room';
-import { PENALTY_SCORE, STROKE_CAP, TICK_RATE } from '../shared/constants';
+import { MAX_PUTT, MIN_PUTT, PENALTY_SCORE, STROKE_CAP, TICK_RATE } from '../shared/constants';
 import { STADIUM } from '../shared/courses';
-import { parseLevel, topAt } from '../shared/level';
+import { cellAt, parseLevel, topAt } from '../shared/level';
 import { total } from '../shared/match';
+import { isGrounded, stepBall } from '../shared/physics';
 import type { ClientMsg, GameEvent, ItemKind, MatchState, PlayerState, ServerMsg } from '../shared/protocol';
 import { Sound } from './audio';
+import type { Scene, Surface } from './audio';
 import { GameClient } from './client';
+import { Stadium } from './stadium';
 import { ITEM_COLORS, PLAYER_COLORS, World } from './world';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -50,6 +53,12 @@ const store = {
   },
 };
 
+// The boards are painted with this face, so it has to be there before the first texture.
+await Promise.all([
+  document.fonts.load('italic 800 84px "Barlow Condensed"'),
+  document.fonts.load('800 40px "Barlow Condensed"'),
+]).catch(() => undefined);
+
 const room = new Room(STADIUM, (Math.random() * 2 ** 32) >>> 0);
 const [clientEnd, serverEnd] = createLocalPair<ClientMsg, ServerMsg>(lag / 2);
 room.connect(serverEnd);
@@ -57,16 +66,19 @@ const client = new GameClient(clientEnd, store.get('name') ?? '');
 
 const levels = STADIUM.map(parseLevel);
 const world = new World($<HTMLCanvasElement>('view'));
+world.setBackdrop(new Stadium(world.renderer));
 const sound = new Sound();
-sound.muted = store.get('muted') === '1';
+sound.setMusic(store.get('music') !== '0');
+sound.setSfx(store.get('sfx') !== '0');
 
 let shownHole = -1;
-let faced = -1;
-let userZoom = 1;
-let drag: { sx: number; sy: number; dx: number; dy: number; power: number } | null = null;
-let lockUntil = 0;
+let framedHole = -1;
+let wasLobby = true;
 let hasPutted = false;
 let toastUntil = 0;
+let lockUntil = 0;
+let lastTickSecond = -1;
+let scene: Scene | null = null;
 
 // ---------------------------------------------------------- title screen
 
@@ -79,6 +91,7 @@ botLabels.forEach((label, i) => {
   b.textContent = label;
   b.onclick = () => {
     botCount = i;
+    sound.ui('toggle');
     drawBots();
   };
   botsEl.append(b);
@@ -94,6 +107,7 @@ nameEl.placeholder = 'Player';
 
 function kickOff(): void {
   sound.unlock();
+  sound.ui('click');
   store.set('name', nameEl.value);
   store.set('bots', String(botCount));
   client.send({ t: 'start', name: nameEl.value, bots: botCount });
@@ -102,10 +116,20 @@ $('start').addEventListener('submit', (e) => {
   e.preventDefault();
   kickOff();
 });
+// Browsers only let sound start after a click or a key press.
+window.addEventListener('pointerdown', () => sound.unlock(), { capture: true });
+window.addEventListener('keydown', () => sound.unlock(), { capture: true });
 
 // ------------------------------------------------------------------ input
+//
+// Left button (or one finger): pull back and let go to putt.
+// Right button (or two fingers): look around. Wheel or pinch: zoom.
 
 const canvas = world.renderer.domElement;
+const pointers = new Map<number, { x: number; y: number }>();
+let aim: { id: number; sx: number; sy: number; dx: number; dy: number; power: number } | null = null;
+let orbitId = -1;
+let pinch = 0;
 
 function canPutt(): boolean {
   const s = client.state;
@@ -114,51 +138,80 @@ function canPutt(): boolean {
 }
 
 canvas.addEventListener('pointerdown', (e) => {
-  sound.unlock();
-  if (e.button !== 0 || !canPutt()) return;
   try {
     canvas.setPointerCapture(e.pointerId);
   } catch {
     /* the pointer is already gone */
   }
-  drag = { sx: e.clientX, sy: e.clientY, dx: 0, dy: 0, power: 0 };
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pointers.size === 2) {
+    // Second finger down: this is a look-around gesture, not a putt.
+    aim = null;
+    const [a, b] = [...pointers.values()];
+    pinch = Math.hypot(a.x - b.x, a.y - b.y);
+  } else if (e.button === 2 || e.button === 1) {
+    orbitId = e.pointerId;
+  } else if (e.button === 0 && canPutt()) {
+    aim = { id: e.pointerId, sx: e.clientX, sy: e.clientY, dx: 0, dy: 0, power: 0 };
+  }
 });
 
 canvas.addEventListener('pointermove', (e) => {
+  const prev = pointers.get(e.pointerId);
+  if (!prev) return;
+  const mx = e.clientX - prev.x;
+  const my = e.clientY - prev.y;
+  prev.x = e.clientX;
+  prev.y = e.clientY;
+
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    const span = Math.hypot(a.x - b.x, a.y - b.y);
+    if (pinch > 0 && span > 0) world.zoomBy(pinch / span);
+    pinch = span;
+    world.orbitBy(mx / 2, my / 2);
+    return;
+  }
+  if (e.pointerId === orbitId) {
+    world.orbitBy(mx, my);
+    return;
+  }
   const me = client.me;
-  if (!drag || !me) return;
-  const a = world.groundPoint(drag.sx, drag.sy, me.ball.z);
+  if (!aim || aim.id !== e.pointerId || !me) return;
+  const a = world.groundPoint(aim.sx, aim.sy, me.ball.z);
   const b = world.groundPoint(e.clientX, e.clientY, me.ball.z);
   if (!a || !b) return;
   // Pull back like a slingshot: the ball goes the opposite way.
   const px = a.x - b.x;
   const py = a.y - b.y;
   const len = Math.hypot(px, py);
-  drag.power = Math.min(1, len / 3.2);
-  drag.dx = len ? px / len : 0;
-  drag.dy = len ? py / len : 0;
+  aim.power = Math.min(1, len / 3.4);
+  const box = $('power');
+  box.style.left = `${Math.min(window.innerWidth - 170, e.clientX)}px`;
+  box.style.top = `${Math.min(window.innerHeight - 90, e.clientY)}px`;
+  aim.dx = len ? px / len : 0;
+  aim.dy = len ? py / len : 0;
 });
 
-function release(fire: boolean): void {
-  if (!drag) return;
-  if (fire && drag.power > 0.05 && canPutt()) {
-    client.send({ t: 'putt', dx: drag.dx * drag.power, dy: drag.dy * drag.power });
+function release(e: PointerEvent, fire: boolean): void {
+  pointers.delete(e.pointerId);
+  if (e.pointerId === orbitId) orbitId = -1;
+  if (!aim || aim.id !== e.pointerId) return;
+  if (fire && aim.power > 0.04 && canPutt()) {
+    client.send({ t: 'putt', dx: aim.dx * aim.power, dy: aim.dy * aim.power });
     lockUntil = performance.now() + 300 + lag;
     hasPutted = true;
   }
-  drag = null;
+  aim = null;
 }
-canvas.addEventListener('pointerup', () => release(true));
-canvas.addEventListener('pointercancel', () => release(false));
-canvas.addEventListener('contextmenu', (e) => {
-  e.preventDefault();
-  release(false);
-});
+canvas.addEventListener('pointerup', (e) => release(e, true));
+canvas.addEventListener('pointercancel', (e) => release(e, false));
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 canvas.addEventListener(
   'wheel',
   (e) => {
     e.preventDefault();
-    userZoom = Math.min(2.6, Math.max(0.6, userZoom * (e.deltaY > 0 ? 0.9 : 1.1)));
+    world.zoomBy(e.deltaY > 0 ? 1.1 : 0.9);
   },
   { passive: false },
 );
@@ -166,32 +219,40 @@ canvas.addEventListener(
 window.addEventListener('keydown', (e) => {
   if (e.target === nameEl) return;
   const k = e.key.toLowerCase();
-  if (k === 'q') world.rotate(-1);
-  else if (k === 'e') world.rotate(1);
-  else if (k === '1' || k === '2') client.send({ t: 'item', slot: Number(k) - 1 });
-  else if (k === 'escape') release(false);
+  if (k === '1' || k === '2') client.send({ t: 'item', slot: Number(k) - 1 });
+  else if (k === 'escape') aim = null;
   else if (k === 'enter' || k === ' ') cardAction();
 });
 
-$('rotL').onclick = () => world.rotate(-1);
-$('rotR').onclick = () => world.rotate(1);
-const muteEl = $('mute');
-function drawMute(): void {
-  muteEl.textContent = sound.muted ? 'Sound off' : 'Sound on';
+const musicEl = $('music');
+const sfxEl = $('sfx');
+function drawSound(): void {
+  musicEl.textContent = sound.musicOn ? 'Music on' : 'Music off';
+  sfxEl.textContent = sound.sfxOn ? 'Sound on' : 'Sound off';
 }
-muteEl.onclick = () => {
-  sound.muted = !sound.muted;
-  store.set('muted', sound.muted ? '1' : '0');
-  drawMute();
+musicEl.onclick = () => {
+  sound.setMusic(!sound.musicOn);
+  store.set('music', sound.musicOn ? '1' : '0');
+  sound.ui('toggle');
+  drawSound();
 };
-drawMute();
+sfxEl.onclick = () => {
+  sound.setSfx(!sound.sfxOn);
+  store.set('sfx', sound.sfxOn ? '1' : '0');
+  sound.ui('toggle');
+  drawSound();
+};
+drawSound();
 
 function cardAction(): void {
   const s = client.state;
-  if (s?.phase === 'holeEnd') client.send({ t: 'ready' });
-  else if (s?.phase === 'final') kickOff();
+  if (s?.phase === 'holeEnd') {
+    sound.ui('click');
+    client.send({ t: 'ready' });
+  } else if (s?.phase === 'final') kickOff();
 }
 $('cardBtn').onclick = cardAction;
+document.querySelectorAll('button').forEach((b) => b.addEventListener('pointerenter', () => sound.ui('hover')));
 
 // ----------------------------------------------------------------- events
 
@@ -210,32 +271,69 @@ function verdict(strokes: number, par: number): string {
 
 client.onEvents = (events: GameEvent[], s: MatchState) => {
   const L = levels[s.hole];
+  const now = performance.now();
   for (const e of events) {
-    const mine = 'p' in e && e.p === client.you;
-    const who = 'p' in e ? s.players.find((p) => p.id === e.p) : undefined;
     if (e.t === 'phase') {
-      if (e.phase === 'playing') sound.whistle();
-      if (e.phase === 'final') sound.whistle(true);
-    } else if (e.t === 'putt') {
-      sound.putt(e.power);
+      if (e.phase === 'playing') sound.whistle('start');
+      else if (e.phase === 'holeEnd') sound.whistle('end');
+      else if (e.phase === 'final') sound.whistle('full');
+      continue;
+    }
+    const mine = e.p === client.you;
+    const who = s.players.find((p) => p.id === e.p);
+    const color = who ? PLAYER_COLORS[who.color] : 0xffffff;
+    const at = client.ballAt(e.p, now) ?? who?.ball ?? { x: 0, y: 0, z: 0 };
+    // Other people's balls are quieter than your own.
+    const gain = mine ? 1 : 0.35;
+
+    if (e.t === 'putt') {
+      sound.putt(e.power, gain);
+      const b = who?.ball;
+      const sp = b ? Math.hypot(b.vx, b.vy) || 1 : 1;
+      world.puttFx(at.x, at.y, at.z, b ? b.vx / sp : 0, b ? b.vy / sp : 0, e.power);
+      if (mine) world.shake(0.03 + e.power * 0.1);
     } else if (e.t === 'bounce') {
-      if (mine) sound.bounce(e.v);
+      sound.bounce(e.v, e.m, gain);
+      world.bounceFx(e.x, e.y, at.z, e.v, e.m, L.def.boards[0]);
+      world.squash(e.p, Math.min(1, e.v / 8));
+      if (mine && e.v > 5) world.shake(Math.min(0.14, e.v * 0.012));
     } else if (e.t === 'land') {
-      if (mine) sound.land();
+      sound.land(e.v, gain);
+      world.landFx(at.x, at.y, at.z, e.v);
+      world.squash(e.p, Math.min(1, e.v / 7));
     } else if (e.t === 'holed') {
-      sound.holed();
-      world.pulse(L.cup.x, L.cup.y, topAt(L, L.cup.x, L.cup.y), who ? PLAYER_COLORS[who.color] : 0xffffff);
-      if (mine) toast(verdict(e.strokes, L.def.par));
-    } else if (e.t === 'out') {
+      sound.cupDrop(gain);
+      world.holedFx(color);
       if (mine) {
-        sound.out();
-        toast('Off the edge +1', true);
+        sound.holed(e.strokes - L.def.par, e.strokes === 1);
+        if (e.strokes <= L.def.par) sound.cheer(e.strokes === 1 ? 1 : e.strokes < L.def.par ? 0.7 : 0.35);
+        toast(verdict(e.strokes, L.def.par));
       }
+    } else if (e.t === 'out') {
+      if (e.water) {
+        sound.splash(gain);
+        world.splashFx(e.x, e.y, e.z + 0.2);
+      } else {
+        sound.out(gain);
+        world.landFx(e.x, e.y, e.z, 8);
+      }
+      if (mine) toast(e.water ? 'In the water +1' : 'Off the edge +1', true);
+    } else if (e.t === 'tunnel') {
+      sound.tunnel(gain);
+      world.sparkleFx(e.x, e.y, at.z, 0x2ee6ff);
+      world.sparkleFx(at.x, at.y, at.z, 0xff7a1a);
+    } else if (e.t === 'boost') {
+      sound.boost(gain);
     } else if (e.t === 'pickup') {
       if (mine) sound.pickup();
+      world.sparkleFx(at.x, at.y, at.z, ITEM_COLORS[e.kind]);
     } else if (e.t === 'item') {
-      sound.item();
-      world.pulse(e.x, e.y, topAt(L, e.x, e.y), ITEM_COLORS[e.kind], e.kind === 'drum' ? 2.2 : 1);
+      sound.item(e.kind, mine ? 1 : 0.7);
+      const z = topAt(L, e.x, e.y);
+      const floor = Number.isFinite(z) ? z : at.z;
+      world.pulse(e.x, e.y, floor, ITEM_COLORS[e.kind], e.kind === 'drum' ? 3.4 : 1.2);
+      world.sparkleFx(e.x, e.y, floor, ITEM_COLORS[e.kind], e.kind === 'drum' ? 60 : 24);
+      if (e.kind === 'drum') world.shake(0.3);
       if (!mine && who) toast(`${who.name}: ${ITEM_TEXT[e.kind][0]}`, true);
     }
   }
@@ -282,6 +380,8 @@ function drawHud(s: MatchState, me: PlayerState | undefined): void {
     c.textContent = secs < 0 ? '' : `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
     c.classList.toggle('late', secs >= 0 && secs <= 10);
   });
+  if (secs >= 0 && secs <= 10 && secs !== lastTickSecond && me && !me.done) sound.tick(secs);
+  lastTickSecond = secs;
 
   const rows = ranked(s);
   once('board', rows.map((p) => `${p.id}${p.name}${p.strokes}${p.done}${p.holed}${total(p)}`).join('|'), () => {
@@ -310,6 +410,15 @@ function drawHud(s: MatchState, me: PlayerState | undefined): void {
       b.onclick = () => client.send({ t: 'item', slot: i });
       box.append(b);
     }
+  });
+
+  const pct = aim ? Math.round(aim.power * 100) : -1;
+  once('power', `${pct}`, () => {
+    const box = $('power');
+    box.hidden = pct < 0;
+    box.style.setProperty('--p', `${Math.max(0, pct)}%`);
+    box.classList.toggle('full', pct >= 85);
+    $('powerNum').textContent = `${Math.max(0, pct)}`;
   });
 
   $('hint').hidden = hasPutted || s.phase !== 'playing';
@@ -356,6 +465,7 @@ function drawCard(s: MatchState): void {
       return tr;
     });
     $('cardTable').replaceChildren(head, ...body);
+    sound.scoreCount();
   });
 }
 
@@ -378,7 +488,7 @@ function drawTags(s: MatchState, now: number, show: boolean): void {
         $('labels').append(tag);
         tags.set(p.id, tag);
       }
-      const scr = world.project(at.x, at.y, at.z + 0.55);
+      const scr = world.project(at.x, at.y, at.z + 0.6);
       tag.style.left = `${scr.x}px`;
       tag.style.top = `${scr.y}px`;
     }
@@ -390,15 +500,31 @@ function drawTags(s: MatchState, now: number, show: boolean): void {
   }
 }
 
+/**
+ * The first half second of the putt as the game would play it, using the same
+ * physics as the room, so the line bends off boards and up ramps truthfully.
+ */
+function previewPath(s: MatchState, me: PlayerState, dx: number, dy: number, power: number) {
+  const L = levels[s.hole];
+  const speed = MIN_PUTT + (MAX_PUTT - MIN_PUTT) * power;
+  const b = { ...me.ball, vx: dx * speed, vy: dy * speed, vz: 0 };
+  const path = [{ x: b.x, y: b.y, z: b.z }];
+  const ticks = Math.round(8 + power * 26);
+  for (let i = 0; i < ticks; i++) {
+    const r = stepBall(L, b, s.tick + i);
+    if (r.oob || r.holed || r.tunnel) break;
+    path.push({ x: b.x, y: b.y, z: b.z });
+    if (b.vx === 0 && b.vy === 0) break;
+  }
+  return path;
+}
+
 // ------------------------------------------------------------------- loop
 
 let last = performance.now();
 
 function frame(now: number): void {
   requestAnimationFrame(frame);
-
-// ?debug puts the room and client on window for poking at from the console.
-if (params.has('debug')) Object.assign(window, { game: { room, client, world } });
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
 
@@ -406,17 +532,21 @@ if (params.has('debug')) Object.assign(window, { game: { room, client, world } }
   room.advance(dt * 1000);
 
   const s = client.state;
-  if (!s) return world.render(dt);
+  if (!s) return world.render(dt, 0, false);
 
   if (s.hole !== shownHole) {
     shownHole = s.hole;
     world.setLevel(levels[s.hole]);
-    userZoom = 1;
   }
   const L = levels[s.hole];
   const me = client.me;
   const lobby = s.phase === 'lobby';
   const wide = window.innerWidth > 760;
+  if (!lobby && (wasLobby || framedHole !== s.hole)) {
+    framedHole = s.hole;
+    world.frameHole();
+  }
+  wasLobby = lobby;
 
   $('title').hidden = !lobby;
   $('hud').hidden = lobby;
@@ -424,46 +554,55 @@ if (params.has('debug')) Object.assign(window, { game: { room, client, world } }
   if (!lobby) drawHud(s, me);
   if (!$('card').hidden) drawCard(s);
 
-  // Camera: show the whole hole when it fits, otherwise stay with the ball.
-  if (!lobby && (world.orbit || faced !== s.hole)) {
-    faced = s.hole;
-    world.orbit = false;
-    world.faceTee();
+  const next: Scene =
+    s.phase === 'lobby' ? 'title' : s.phase === 'intro' ? 'intro' : s.phase === 'playing' ? 'play' : s.phase === 'holeEnd' ? 'card' : 'final';
+  if (next !== scene) {
+    scene = next;
+    sound.setScene(next);
   }
-  world.orbit = lobby;
+
+  // ---- camera
+  const mine = me ? client.ballAt(me.id, now) : null;
+  const playing = s.phase === 'playing' && !!mine && !me?.done;
+  world.mode = lobby ? 'title' : playing ? 'play' : 'overview';
+  world.follow = playing ? mine : null;
   world.shift = lobby && wide ? 0.23 : 0;
   world.lift = lobby && !wide ? 0.34 : 0;
-  const fit = world.fitZoom();
-  const mine = me ? client.ballAt(me.id, now) : null;
-  const playing = s.phase === 'playing' && mine && !me?.done;
-  const zoom = playing ? Math.max(fit, wide ? 0.85 : 0.6) * userZoom : fit * (lobby ? 0.9 : 1);
-  const follow = playing ? Math.min(1, Math.max(0, (zoom / fit - 1) * 1.6)) : 0;
-  world.zoom = zoom;
-  const cx = L.w / 2;
-  const cy = L.h / 2;
-  world.focus.set(
-    cx + ((mine?.x ?? cx) - cx) * follow,
-    (mine?.z ?? 0) * follow,
-    cy + ((mine?.y ?? cy) - cy) * follow,
-  );
 
-  world.syncBalls(
-    lobby
-      ? []
-      : s.players.map((p) => {
-          const at = client.ballAt(p.id, now) ?? p.ball;
-          return { id: p.id, color: PLAYER_COLORS[p.color], x: at.x, y: at.y, z: at.z, hidden: p.holed };
-        }),
-  );
+  // ---- balls and pickups
+  const views = lobby
+    ? []
+    : s.players.map((p) => {
+        const at = client.ballAt(p.id, now) ?? p.ball;
+        return { id: p.id, color: PLAYER_COLORS[p.color], x: at.x, y: at.y, z: at.z, holed: p.holed };
+      });
+  world.syncBalls(views, dt);
   world.syncPickups(lobby ? [] : s.pickups);
+  const nearCup = views.some((v) => !v.holed && Math.hypot(v.x - L.cup.x, v.y - L.cup.y) < 1.4);
 
+  // ---- aiming
   const ready = canPutt() && !!mine;
-  if (!ready) drag = null;
-  world.setMarker(ready && !drag ? mine : null);
-  world.setAim(drag && mine ? { ...mine, dx: drag.dx, dy: drag.dy, power: drag.power } : null);
+  if (!ready) aim = null;
+  world.setMarker(ready && !aim && mine ? mine : null);
+  if (aim && me && aim.power > 0.04) world.setAim(previewPath(s, me, aim.dx, aim.dy, aim.power), aim.power);
+  else world.setAim(null);
+  sound.aim(aim ? aim.power : null);
 
-  world.render(dt);
+  // ---- the sound of your own ball rolling
+  let surface: Surface = 'turf';
+  let speed = 0;
+  if (me && mine && playing && me.moving) {
+    speed = world.ballSpeed(me.id);
+    const c = cellAt(L, Math.floor(mine.x), Math.floor(mine.y));
+    surface = !isGrounded(L, { ...me.ball, x: mine.x, y: mine.y, z: mine.z }) ? 'air' : c.surface;
+  }
+  sound.roll(speed, surface);
+
+  world.render(dt, client.tickAt(now), nearCup);
   drawTags(s, now, s.phase === 'playing' || s.phase === 'intro');
 }
 
 requestAnimationFrame(frame);
+
+// ?debug puts the room and client on window for poking at from the console.
+if (params.has('debug')) Object.assign(window, { game: { room, client, world, sound } });

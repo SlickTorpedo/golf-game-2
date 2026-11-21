@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Bubaran - audio bench</title>
+    <style>
+      body { font: 14px/1.4 system-ui, sans-serif; background: #10141a; color: #dfe6ee; margin: 20px; }
+      h1 { font-size: 18px; } h2 { font-size: 14px; margin: 18px 0 6px; color: #9fb3c8; }
+      button { font: inherit; margin: 2px; padding: 5px 10px; background: #233041; color: inherit; border: 1px solid #3a4c63; border-radius: 4px; cursor: pointer; }
+      button:hover { background: #2e4057; }
+      table { border-collapse: collapse; margin-top: 10px; font: 12px ui-monospace, monospace; }
+      td, th { border: 1px solid #2a3644; padding: 3px 7px; text-align: right; }
+      td:first-child, th:first-child { text-align: left; }
+      .bad { color: #ff7b72; } .warn { color: #e3b341; }
+      input[type=range] { vertical-align: middle; }
+    </style>
+  </head>
+  <body>
+    <h1>Bubaran audio bench</h1>
+    <p>Click anything to hear it (the first click unlocks audio). "Run check" renders every sound and the music offline and measures it.</p>
+    <div id="controls"></div>
+    <h2>Offline check</h2>
+    <button id="run">Run check</button> <span id="status"></span>
+    <div id="report"></div>
+    <script type="module" src="./audio-preview.ts"></script>
+  </body>
+</html>

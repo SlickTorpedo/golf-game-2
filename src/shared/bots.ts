@@ -45,6 +45,10 @@ export function buildNav(L: Level): Nav {
     }
   }
 
+  for (const t of L.tunnels) {
+    reverse[Math.floor(t.ty) * L.w + Math.floor(t.tx)].push(Math.floor(t.y) * L.w + Math.floor(t.x));
+  }
+
   const next = new Int32Array(n).fill(-1);
   const seen = new Uint8Array(n);
   const start = Math.floor(L.cup.y) * L.w + Math.floor(L.cup.x);

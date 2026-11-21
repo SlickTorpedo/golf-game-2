@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Stadium preview</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #070b1c; overflow: hidden; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      #info { position: fixed; left: 8px; top: 8px; color: #9ab; font: 12px monospace; pointer-events: none; }
+    </style>
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+    <div id="info"></div>
+    <script type="module" src="./stadium-preview.ts"></script>
+  </body>
+</html>

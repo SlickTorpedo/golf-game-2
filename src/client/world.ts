@@ -1,8 +1,17 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
-import { BALL_R, CUP_R, WALL_H } from '../shared/constants';
-import { DIRS, Level, cellAt, cornerHeights, topAt } from '../shared/level';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { BALL_R, PITCH_DROP } from '../shared/constants';
+import { Level, topAt } from '../shared/level';
+import type { HitMaterial } from '../shared/physics';
 import type { ItemKind, Pickup } from '../shared/protocol';
+import { Course, CourseTextures } from './course';
+import { Particles, Trail } from './fx';
+import * as paint from './textures';
 
 export const PLAYER_COLORS = [0xe9ff3a, 0xff4fa3, 0x3df0ff, 0xff8a2a, 0xa98bff, 0x7dff6a, 0xff5252, 0xf4f4f4];
 export const ITEM_COLORS: Record<ItemKind, number> = {
@@ -13,14 +22,10 @@ export const ITEM_COLORS: Record<ItemKind, number> = {
 };
 
 const NIGHT = 0x070b1c;
-const TURF_A = 0x18c964;
-const TURF_B = 0x12ad55;
-const MUD = 0x6b4a2f;
-const TRACK = 0xc8452e;
-const CONCRETE = 0x7d8496;
-const SLAB_BOTTOM = -1;
-const VIEW_H = 13;
-const PITCH = 0.74;
+const FOV = 36;
+const MIN_PITCH = 0.2;
+const MAX_PITCH = 1.38;
+const AIM_DOTS = 44;
 
 export interface BallView {
   id: string;
@@ -28,86 +33,152 @@ export interface BallView {
   x: number;
   y: number;
   z: number;
-  hidden: boolean;
+  holed: boolean;
+}
+
+/** Scenery that sits round the course. Its pitch is the plane y = 0 at its origin. */
+export interface Backdrop {
+  group: THREE.Group;
+  update(dt: number, time: number): void;
+}
+
+interface BallRig {
+  /** Moves and squashes. */
+  group: THREE.Group;
+  /** Spins. */
+  mesh: THREE.Mesh;
+  trail: Trail;
+  last: THREE.Vector3;
+  speed: number;
+  squash: number;
+  sink: number;
 }
 
 /** Everything drawn in 3D. It is told what to show and keeps no game rules. */
 export class World {
   readonly renderer: THREE.WebGLRenderer;
   private readonly scene = new THREE.Scene();
-  private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
+  private readonly camera = new THREE.PerspectiveCamera(FOV, 1, 0.5, 900);
+  private readonly composer: EffectComposer;
   private readonly raycaster = new THREE.Raycaster();
   private readonly lights: THREE.DirectionalLight[] = [];
-  private levelGroup: THREE.Group | null = null;
+  private readonly tex: CourseTextures;
+  private readonly dimples = paint.dimpleTexture();
+  private readonly particles: Particles;
+  private course: Course | null = null;
   private level: Level | null = null;
-  private readonly balls = new Map<string, THREE.Mesh>();
+  private backdrop: Backdrop | null = null;
+  private readonly balls = new Map<string, BallRig>();
   private readonly pickups = new Map<number, THREE.Group>();
-  private readonly aimDots: THREE.Mesh[] = [];
+  private readonly aimDots: THREE.InstancedMesh;
+  private readonly aimHead: THREE.Mesh;
   private readonly marker: THREE.Mesh;
-  private flag: THREE.Group | null = null;
   private pulses: { mesh: THREE.Mesh; age: number }[] = [];
-  private readonly ballGeo = new THREE.SphereGeometry(BALL_R, 32, 20);
+  private readonly ballGeo = new THREE.SphereGeometry(BALL_R, 40, 28);
+  private time = 0;
+  private readonly size = new THREE.Vector2();
 
-  /** Where the camera should look, in map coordinates (x, height, y). */
-  readonly focus = new THREE.Vector3();
+  // ---- camera rig
+  /** 'title' drifts round the hole, 'overview' frames all of it, 'play' stays with your ball. */
+  mode: 'title' | 'overview' | 'play' = 'title';
+  /** Your ball, in map coordinates, while playing. */
+  follow: { x: number; y: number; z: number } | null = null;
+  /** Slide the picture sideways / upward by this share of the screen. */
+  shift = 0;
+  lift = 0;
+  private shiftNow = 0;
+  private liftNow = 0;
   private readonly look = new THREE.Vector3();
   private yaw = Math.PI / 4;
   private yawGoal = Math.PI / 4;
-  zoom = 1;
-  private zoomNow = 1;
-  /** Slide the picture sideways by this share of the screen width. */
-  shift = 0;
-  private shiftNow = 0;
-  /** The same, upward, as a share of the screen height. */
-  lift = 0;
-  private liftNow = 0;
-  orbit = false;
-  private time = 0;
+  private pitch = 0.8;
+  private pitchGoal = 0.8;
+  private dist = 30;
+  private zoomFactor = 1;
+  private shakeAmt = 0;
 
   constructor(canvas: HTMLCanvasElement) {
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.NeutralToneMapping;
     this.scene.background = new THREE.Color(NIGHT);
+    this.scene.fog = new THREE.FogExp2(NIGHT, 0.0045);
 
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-    this.scene.environmentIntensity = 0.35;
+    this.scene.environmentIntensity = 0.3;
 
-    this.scene.add(new THREE.HemisphereLight(0x9fb4ff, 0x10203a, 0.55));
+    this.scene.add(new THREE.HemisphereLight(0xa9bcff, 0x0b1830, 0.5));
     // Two banks of floodlights from opposite corners: everything gets two shadows.
     for (const [color, power] of [
-      [0xf2f6ff, 2.1],
-      [0xcfe0ff, 1.1],
+      [0xf4f7ff, 1.9],
+      [0xc4d6ff, 0.8],
     ] as const) {
       const light = new THREE.DirectionalLight(color, power);
       light.castShadow = true;
       light.shadow.mapSize.set(2048, 2048);
-      light.shadow.bias = -0.0005;
+      light.shadow.bias = -0.0004;
       light.shadow.normalBias = 0.02;
+      light.shadow.radius = 3;
       this.scene.add(light, light.target);
       this.lights.push(light);
     }
 
-    const dotGeo = new THREE.CircleGeometry(1, 20).rotateX(-Math.PI / 2);
-    for (let i = 0; i < 12; i++) {
-      const dot = new THREE.Mesh(
-        dotGeo,
-        new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true, toneMapped: false }),
-      );
-      dot.renderOrder = 10;
-      dot.visible = false;
-      this.scene.add(dot);
-      this.aimDots.push(dot);
-    }
+    // Rendered to a floating-point buffer so the boards can be brighter than white and bloom.
+    const target = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType, samples: 4 });
+    this.composer = new EffectComposer(this.renderer, target);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    // One bad pixel (not-a-number or absurdly bright) would be smeared over the whole
+    // screen by the bloom blur, so clean the picture first.
+    this.composer.addPass(
+      new ShaderPass({
+        uniforms: { tDiffuse: { value: null } },
+        vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+        fragmentShader:
+          'uniform sampler2D tDiffuse; varying vec2 vUv; void main() { vec4 c = texture2D(tDiffuse, vUv);' +
+          ' vec3 rgb = vec3(c.r == c.r ? c.r : 0.0, c.g == c.g ? c.g : 0.0, c.b == c.b ? c.b : 0.0);' +
+          ' gl_FragColor = vec4(clamp(rgb, 0.0, 24.0), 1.0); }',
+      }),
+    );
+    this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(4, 4), 0.42, 0.7, 0.82));
+    this.composer.addPass(new OutputPass());
+
+    this.tex = {
+      turf: paint.turfTexture(),
+      concrete: paint.concreteTexture(),
+      mud: paint.mudTexture(),
+      track: paint.trackTexture(),
+      chevron: paint.chevronTexture(),
+      board: paint.boardTexture(),
+      lid: paint.lidTexture(),
+      ripple: paint.rippleTexture(),
+    };
+    this.particles = new Particles(paint.sparkTexture());
+    this.scene.add(this.particles.points);
+
+    this.aimDots = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(1, 10, 8),
+      new THREE.MeshBasicMaterial({ depthTest: false, transparent: true, opacity: 0.95 }),
+      AIM_DOTS,
+    );
+    this.aimDots.renderOrder = 10;
+    this.aimDots.frustumCulled = false;
+    this.aimDots.count = 0;
+    this.aimHead = new THREE.Mesh(
+      new THREE.ConeGeometry(0.12, 0.3, 16).rotateX(Math.PI / 2),
+      new THREE.MeshBasicMaterial({ depthTest: false, transparent: true }),
+    );
+    this.aimHead.renderOrder = 10;
+    this.aimHead.visible = false;
+    this.scene.add(this.aimDots, this.aimHead);
 
     this.marker = new THREE.Mesh(
-      new THREE.RingGeometry(BALL_R * 1.5, BALL_R * 1.9, 32).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, depthTest: false, toneMapped: false }),
+      new THREE.RingGeometry(BALL_R * 1.55, BALL_R * 1.95, 40).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, depthWrite: false }),
     );
-    this.marker.renderOrder = 9;
+    this.marker.renderOrder = 5;
     this.marker.visible = false;
     this.scene.add(this.marker);
 
@@ -116,30 +187,37 @@ export class World {
 
   resize(): void {
     const c = this.renderer.domElement;
-    this.renderer.setSize(c.clientWidth, c.clientHeight, false);
+    const w = Math.max(1, c.clientWidth);
+    const h = Math.max(1, c.clientHeight);
+    this.size.set(w, h);
+    this.renderer.setSize(w, h, false);
+    this.composer.setPixelRatio(this.renderer.getPixelRatio());
+    this.composer.setSize(w, h);
+  }
+
+  setBackdrop(b: Backdrop): void {
+    this.backdrop = b;
+    this.scene.add(b.group);
+    this.placeBackdrop();
+  }
+
+  private placeBackdrop(): void {
+    if (this.backdrop && this.level) this.backdrop.group.position.set(this.level.w / 2, -PITCH_DROP, this.level.h / 2);
   }
 
   // ------------------------------------------------------------- the hole
 
   setLevel(L: Level): void {
-    if (this.levelGroup) {
-      this.scene.remove(this.levelGroup);
-      this.levelGroup.traverse((o) => {
-        if (o instanceof THREE.Mesh) {
-          o.geometry.dispose();
-          for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
-            (m as THREE.MeshBasicMaterial).map?.dispose();
-            m.dispose();
-          }
-        }
-      });
+    if (this.course) {
+      this.scene.remove(this.course.group);
+      this.course.dispose();
     }
     for (const g of this.pickups.values()) this.scene.remove(g);
     this.pickups.clear();
     this.level = L;
-    this.levelGroup = buildLevel(L);
-    this.flag = this.levelGroup.getObjectByName('flag') as THREE.Group;
-    this.scene.add(this.levelGroup);
+    this.course = new Course(L, this.tex);
+    this.scene.add(this.course.group);
+    this.placeBackdrop();
 
     const cx = L.w / 2;
     const cy = L.h / 2;
@@ -160,17 +238,8 @@ export class World {
     });
   }
 
-  /** The zoom at which the whole hole fits on screen. */
-  fitZoom(): number {
-    if (!this.level) return 1;
-    const c = this.renderer.domElement;
-    const aspect = c.clientWidth / Math.max(1, c.clientHeight);
-    const room = Math.min(VIEW_H * (1 - Math.abs(this.lift) * 2), VIEW_H * aspect * (1 - Math.abs(this.shift) * 2));
-    return room / (Math.hypot(this.level.w, this.level.h) + 1.5);
-  }
-
-  /** Turn to the corner view that puts the tee nearest the camera. */
-  faceTee(): void {
+  /** Swing round to the corner view with the tee nearest, arriving with a short sweep. */
+  frameHole(): void {
     if (!this.level) return;
     const vx = this.level.tee.x - this.level.cup.x;
     const vy = this.level.tee.y - this.level.cup.y;
@@ -185,39 +254,110 @@ export class World {
       }
     }
     // Take the short way round from wherever the camera is now.
-    const turn = Math.atan2(Math.sin(best - this.yawGoal), Math.cos(best - this.yawGoal));
-    this.yawGoal += turn;
+    this.yawGoal += Math.atan2(Math.sin(best - this.yawGoal), Math.cos(best - this.yawGoal));
+    this.yaw = this.yawGoal - 0.7;
+    // Start low, looking across at the stands, then rise over the hole.
+    this.pitchGoal = 0.62;
+    this.pitch = 0.26;
+    this.dist = this.fitDistance() * 1.35;
+    this.zoomFactor = 1;
+    this.look.set(this.level.w / 2, 0, this.level.h / 2);
   }
 
-  rotate(steps: number): void {
-    this.yawGoal += (steps * Math.PI) / 2;
+  /** Drag to look around: pixels moved. */
+  orbitBy(dx: number, dy: number): void {
+    this.yawGoal -= dx * 0.006;
+    this.pitchGoal = Math.min(MAX_PITCH, Math.max(MIN_PITCH, this.pitchGoal + dy * 0.005));
+  }
+
+  zoomBy(factor: number): void {
+    this.zoomFactor = Math.min(1.5, Math.max(0.4, this.zoomFactor * factor));
+  }
+
+  /** Distance from which the whole hole fits on screen. */
+  private fitDistance(): number {
+    if (!this.level) return 30;
+    const aspect = this.size.x / this.size.y;
+    const halfV = THREE.MathUtils.degToRad(FOV / 2) * (1 - Math.abs(this.lift) * 2);
+    const halfH = Math.atan(Math.tan(THREE.MathUtils.degToRad(FOV / 2)) * aspect) * (1 - Math.abs(this.shift) * 2);
+    const r = Math.hypot(this.level.w, this.level.h) / 2 + 0.8;
+    return r / Math.sin(Math.min(halfV, halfH));
   }
 
   // ------------------------------------------------------- moving things
 
-  syncBalls(views: BallView[]): void {
+  syncBalls(views: BallView[], dt: number): void {
     const seen = new Set<string>();
+    const L = this.level;
     for (const v of views) {
       seen.add(v.id);
-      let mesh = this.balls.get(v.id);
-      if (!mesh) {
-        mesh = new THREE.Mesh(
+      let rig = this.balls.get(v.id);
+      if (!rig) {
+        const mesh = new THREE.Mesh(
           this.ballGeo,
-          new THREE.MeshPhysicalMaterial({ color: v.color, roughness: 0.18, clearcoat: 1, clearcoatRoughness: 0.08 }),
+          new THREE.MeshPhysicalMaterial({
+            map: paint.ballTexture(v.color),
+            bumpMap: this.dimples,
+            bumpScale: 1.2,
+            roughness: 0.22,
+            clearcoat: 0.9,
+            clearcoatRoughness: 0.12,
+          }),
         );
         mesh.castShadow = true;
-        this.scene.add(mesh);
-        this.balls.set(v.id, mesh);
+        mesh.rotation.set(Math.random() * 3, Math.random() * 3, 0);
+        const group = new THREE.Group();
+        group.add(mesh);
+        const trail = new Trail(v.color);
+        this.scene.add(group, trail.mesh);
+        rig = { group, mesh, trail, last: new THREE.Vector3(v.x, v.z, v.y), speed: 0, squash: 0, sink: -1 };
+        this.balls.set(v.id, rig);
       }
-      mesh.visible = !v.hidden;
-      mesh.position.set(v.x, v.z + BALL_R, v.y);
+
+      const p = new THREE.Vector3(v.x, v.z + BALL_R, v.y);
+      if (v.holed && L) {
+        // Drop into the cup, then vanish.
+        if (rig.sink < 0) rig.sink = 0;
+        rig.sink += dt;
+        const t = Math.min(1, rig.sink / 0.32);
+        p.set(L.cup.x, topAt(L, L.cup.x, L.cup.y) + BALL_R - t * t * 0.46, L.cup.y);
+        rig.group.visible = rig.sink < 0.9;
+      } else {
+        rig.sink = -1;
+        rig.group.visible = true;
+      }
+
+      // Roll: turn the ball about the axis across its direction of travel.
+      const step = p.clone().sub(rig.last);
+      const flat = Math.hypot(step.x, step.z);
+      if (flat > 1e-5 && flat < 1.5) {
+        const axis = new THREE.Vector3(step.z, 0, -step.x).normalize();
+        rig.mesh.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(axis, flat / BALL_R));
+      }
+      rig.speed = dt > 0 && flat < 1.5 ? flat / dt : 0;
+      rig.last.copy(p);
+
+      rig.squash = Math.max(0, rig.squash - dt * 7);
+      const s = rig.squash * 0.22;
+      rig.group.scale.set(1 + s, 1 - s * 1.4, 1 + s);
+      rig.group.position.copy(p);
+      rig.trail.mesh.visible = rig.group.visible;
+      rig.trail.push(new THREE.Vector3(p.x, p.y - BALL_R + 0.03, p.z), v.holed ? 0 : rig.speed, BALL_R * 0.85);
     }
-    for (const [id, mesh] of this.balls) {
+    for (const [id, rig] of this.balls) {
       if (seen.has(id)) continue;
-      this.scene.remove(mesh);
-      (mesh.material as THREE.Material).dispose();
+      this.scene.remove(rig.group, rig.trail.mesh);
+      const mat = rig.mesh.material as THREE.MeshPhysicalMaterial;
+      mat.map?.dispose();
+      mat.dispose();
+      rig.trail.dispose();
       this.balls.delete(id);
     }
+  }
+
+  /** How fast a ball is moving on screen right now, for the rolling sound. */
+  ballSpeed(id: string): number {
+    return this.balls.get(id)?.speed ?? 0;
   }
 
   syncPickups(list: Pickup[]): void {
@@ -233,39 +373,64 @@ export class World {
       }
       g.visible = k.cooldown === 0;
       const prop = g.children[0];
-      prop.position.y = 0.38 + Math.sin(this.time * 2.4 + k.id) * 0.05;
+      prop.position.y = 0.42 + Math.sin(this.time * 2.4 + k.id) * 0.06;
       prop.rotation.y = this.time * 1.6;
+      g.children[1].scale.setScalar(1 + Math.sin(this.time * 3 + k.id) * 0.08);
+    }
+    for (const [id, g] of this.pickups) {
+      if (list.some((k) => k.id === id)) continue;
+      this.scene.remove(g);
+      this.pickups.delete(id);
     }
   }
 
-  /** Show the putt about to be made, or pass null to hide it. */
-  setAim(aim: { x: number; y: number; z: number; dx: number; dy: number; power: number } | null): void {
-    this.aimDots.forEach((dot, i) => {
-      dot.visible = !!aim && aim.power > 0.04;
-      if (!aim) return;
-      const t = (i + 1) / this.aimDots.length;
-      const reach = 0.5 + aim.power * 3.6;
-      dot.position.set(aim.x + aim.dx * reach * t, aim.z + 0.03, aim.y + aim.dy * reach * t);
-      dot.scale.setScalar(0.085 - t * 0.04);
-      const mat = dot.material as THREE.MeshBasicMaterial;
-      mat.color.setHex(aim.power > 0.85 ? 0xff2e93 : 0xffffff);
-      mat.opacity = 1 - t * 0.5;
-    });
+  /**
+   * Show the line the putt will take: points along the predicted path, in map
+   * coordinates, starting at the ball. Pass null to hide it.
+   */
+  setAim(path: { x: number; y: number; z: number }[] | null, power = 0): void {
+    if (!path || path.length < 2) {
+      this.aimDots.count = 0;
+      this.aimHead.visible = false;
+      return;
+    }
+    const n = Math.min(AIM_DOTS, path.length);
+    const m = new THREE.Matrix4();
+    const color = new THREE.Color(0xffffff).lerp(new THREE.Color(0xff2e93), Math.max(0, power - 0.55) / 0.45);
+    for (let i = 0; i < n; i++) {
+      const p = path[i];
+      const t = i / (n - 1);
+      const s = 0.07 * (1 - t * 0.55);
+      m.makeScale(s, s, s).setPosition(p.x, p.z + BALL_R, p.y);
+      this.aimDots.setMatrixAt(i, m);
+    }
+    this.aimDots.count = n;
+    this.aimDots.instanceMatrix.needsUpdate = true;
+    (this.aimDots.material as THREE.MeshBasicMaterial).color.copy(color);
+
+    const a = path[n - 2];
+    const b = path[n - 1];
+    this.aimHead.visible = true;
+    this.aimHead.position.set(b.x, b.z + BALL_R, b.y);
+    this.aimHead.lookAt(b.x + (b.x - a.x), b.z + BALL_R + (b.z - a.z), b.y + (b.y - a.y));
+    (this.aimHead.material as THREE.MeshBasicMaterial).color.copy(color);
   }
 
   /** Ring under your own ball when it is your move. */
   setMarker(at: { x: number; y: number; z: number } | null): void {
     this.marker.visible = !!at;
     if (!at) return;
-    this.marker.position.set(at.x, at.z + 0.02, at.y);
-    this.marker.scale.setScalar(1 + Math.sin(this.time * 5) * 0.08);
-    (this.marker.material as THREE.MeshBasicMaterial).opacity = 0.75;
+    this.marker.position.set(at.x, at.z + 0.012, at.y);
+    this.marker.scale.setScalar(1.1 + Math.sin(this.time * 5) * 0.1);
+    (this.marker.material as THREE.MeshBasicMaterial).opacity = 0.8;
   }
+
+  // -------------------------------------------------------------- effects
 
   pulse(x: number, y: number, z: number, color: number, size = 1): void {
     const mesh = new THREE.Mesh(
-      new THREE.RingGeometry(0.82, 1, 40).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ color, transparent: true, depthTest: false, toneMapped: false }),
+      new THREE.RingGeometry(0.86, 1, 48).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(1.6), transparent: true, depthWrite: false }),
     );
     mesh.position.set(x, z + 0.04, y);
     mesh.userData.size = size;
@@ -274,43 +439,153 @@ export class World {
     this.pulses.push({ mesh, age: 0 });
   }
 
+  shake(amount: number): void {
+    this.shakeAmt = Math.min(0.5, this.shakeAmt + amount);
+  }
+
+  squash(id: string, amount: number): void {
+    const rig = this.balls.get(id);
+    if (rig) rig.squash = Math.min(1, Math.max(rig.squash, amount));
+  }
+
+  /** Turf thrown back from under the putter. */
+  puttFx(x: number, y: number, z: number, dx: number, dy: number, power: number): void {
+    this.particles.burst({
+      at: new THREE.Vector3(x, z + 0.03, y),
+      count: Math.round(5 + power * 16),
+      colors: [0x2fe57e, 0x18b85a, 0xf2fff0, 0x0f7a3c],
+      speed: [0.6, 1.6 + power * 3],
+      dir: new THREE.Vector3(-dx, 0.7, -dy),
+      spread: 0.45,
+      life: [0.25, 0.6],
+      gravity: 12,
+    });
+  }
+
+  bounceFx(x: number, y: number, z: number, speed: number, material: HitMaterial, color: number): void {
+    const hard = Math.min(1, speed / 10);
+    this.particles.burst({
+      at: new THREE.Vector3(x, z + BALL_R, y),
+      count: Math.round(3 + hard * 12),
+      colors: material === 'board' ? [color, 0xffffff] : material === 'cone' ? [0xff7a1a, 0xffffff] : [0xdfe6f5, 0x9aa3b5],
+      speed: [0.8, 1.5 + hard * 3.5],
+      life: [0.15, 0.4],
+      gravity: 6,
+    });
+    if (material === 'cone') this.course?.hitCone(x, y);
+  }
+
+  landFx(x: number, y: number, z: number, speed: number): void {
+    this.particles.burst({
+      at: new THREE.Vector3(x, z + 0.03, y),
+      count: Math.round(6 + Math.min(14, speed)),
+      colors: [0x2fe57e, 0xdfffe6, 0x18b85a],
+      speed: [0.8, 2.2],
+      life: [0.2, 0.5],
+      gravity: 10,
+    });
+  }
+
+  /** Confetti out of the cup, in the scorer's colour. */
+  holedFx(color: number): void {
+    const L = this.level;
+    if (!L) return;
+    const z = topAt(L, L.cup.x, L.cup.y);
+    this.particles.burst({
+      at: new THREE.Vector3(L.cup.x, z + 0.05, L.cup.y),
+      count: 90,
+      colors: [color, color, 0xffffff, 0xd9ff2e, 0xff2e93, 0x2ee6ff],
+      speed: [1.5, 4.2],
+      lift: 3.2,
+      spread: 0.75,
+      dir: new THREE.Vector3(0, 1, 0),
+      life: [0.7, 1.6],
+      gravity: 7,
+    });
+    this.pulse(L.cup.x, L.cup.y, z, color, 1.6);
+  }
+
+  splashFx(x: number, y: number, z: number): void {
+    this.particles.burst({
+      at: new THREE.Vector3(x, z, y),
+      count: 46,
+      colors: [0xbfeaff, 0xffffff, 0x58b8e8],
+      speed: [1.2, 3.4],
+      lift: 2.4,
+      spread: 0.6,
+      dir: new THREE.Vector3(0, 1, 0),
+      life: [0.4, 0.9],
+      gravity: 11,
+    });
+    this.pulse(x, y, z, 0xbfeaff, 0.9);
+  }
+
+  sparkleFx(x: number, y: number, z: number, color: number, count = 26): void {
+    this.particles.burst({
+      at: new THREE.Vector3(x, z + 0.2, y),
+      count,
+      colors: [color, 0xffffff],
+      speed: [0.8, 2.6],
+      life: [0.3, 0.8],
+      gravity: 3,
+    });
+  }
+
   // ---------------------------------------------------------------- frame
 
-  render(dt: number): void {
+  render(dt: number, tick: number, ballNearCup: boolean): void {
     this.time += dt;
     const c = this.renderer.domElement;
-    const w = c.clientWidth;
-    const h = c.clientHeight;
-    if (c.width !== Math.floor(w * this.renderer.getPixelRatio())) this.resize();
+    if (c.clientWidth !== this.size.x || c.clientHeight !== this.size.y) this.resize();
+    const L = this.level;
 
-    if (this.orbit) this.yawGoal += dt * 0.12;
-    const ease = 1 - Math.exp(-dt * 6);
-    this.yaw += (this.yawGoal - this.yaw) * ease;
-    this.zoomNow += (this.zoom - this.zoomNow) * ease;
+    // ---- camera
+    const ease = 1 - Math.exp(-dt * 5);
+    if (this.mode === 'title') this.yawGoal += dt * 0.09;
     this.shiftNow += (this.shift - this.shiftNow) * ease;
     this.liftNow += (this.lift - this.liftNow) * ease;
-    this.look.lerp(this.focus, 1 - Math.exp(-dt * 4));
+    const fit = this.fitDistance();
+    let distGoal = fit;
+    const focus = new THREE.Vector3(L ? L.w / 2 : 0, 0, L ? L.h / 2 : 0);
+    if (this.mode === 'title') {
+      distGoal = fit * 1.08;
+      this.pitchGoal = 0.33;
+    } else if (this.mode === 'play' && this.follow) {
+      distGoal = Math.min(fit, 27) * this.zoomFactor;
+      // The closer in, the more the camera stays with the ball rather than the hole.
+      const stay = Math.min(1, Math.max(0, (fit / distGoal - 1) * 1.4));
+      focus.lerp(new THREE.Vector3(this.follow.x, this.follow.z, this.follow.y), stay);
+    }
+    distGoal = Math.min(52, distGoal);
+    const turn = 1 - Math.exp(-dt * (this.mode === 'play' ? 12 : 2.2));
+    this.yaw += (this.yawGoal - this.yaw) * turn;
+    this.pitch += (this.pitchGoal - this.pitch) * turn;
+    this.dist += (distGoal - this.dist) * (1 - Math.exp(-dt * 3.5));
+    this.look.lerp(focus, 1 - Math.exp(-dt * 4));
 
     const cam = this.camera;
-    const aspect = w / Math.max(1, h);
-    cam.left = (-VIEW_H * aspect) / 2;
-    cam.right = (VIEW_H * aspect) / 2;
-    cam.top = VIEW_H / 2;
-    cam.bottom = -VIEW_H / 2;
-    cam.zoom = this.zoomNow;
+    cam.aspect = this.size.x / this.size.y;
     cam.position
-      .set(Math.sin(this.yaw) * Math.cos(PITCH), Math.sin(PITCH), Math.cos(this.yaw) * Math.cos(PITCH))
-      .multiplyScalar(60)
+      .set(Math.sin(this.yaw) * Math.cos(this.pitch), Math.sin(this.pitch), Math.cos(this.yaw) * Math.cos(this.pitch))
+      .multiplyScalar(this.dist)
       .add(this.look);
     cam.lookAt(this.look);
-    if (Math.abs(this.shiftNow) + Math.abs(this.liftNow) > 0.001) {
-      cam.setViewOffset(w, h, -this.shiftNow * w, this.liftNow * h, w, h);
+    if (this.shakeAmt > 0.001) {
+      cam.position.x += (Math.random() - 0.5) * this.shakeAmt;
+      cam.position.y += (Math.random() - 0.5) * this.shakeAmt;
+      this.shakeAmt *= Math.exp(-dt * 9);
     }
-    else cam.clearViewOffset();
+    if (Math.abs(this.shiftNow) + Math.abs(this.liftNow) > 0.001) {
+      cam.setViewOffset(this.size.x, this.size.y, -this.shiftNow * this.size.x, this.liftNow * this.size.y, this.size.x, this.size.y);
+    } else {
+      cam.clearViewOffset();
+    }
     cam.updateProjectionMatrix();
 
-    if (this.flag) this.flag.rotation.y = this.yaw + Math.PI / 2 + Math.sin(this.time * 1.3) * 0.15;
-
+    // ---- things that move by themselves
+    this.course?.update(dt, this.time, tick, ballNearCup);
+    this.backdrop?.update(dt, this.time);
+    this.particles.update(dt);
     this.pulses = this.pulses.filter((p) => {
       p.age += dt;
       const t = p.age / 0.6;
@@ -323,7 +598,7 @@ export class World {
       return false;
     });
 
-    this.renderer.render(this.scene, cam);
+    this.composer.render(dt);
   }
 
   /** Where a screen point lands on a flat plane at this height. */
@@ -347,227 +622,84 @@ export class World {
   }
 }
 
-// ------------------------------------------------------------- builders
-
-function buildLevel(L: Level): THREE.Group {
-  const group = new THREE.Group();
-  const top: number[] = [];
-  const topCol: number[] = [];
-  const side: number[] = [];
-  const sideCol: number[] = [];
-  const marks: number[] = [];
-  const color = new THREE.Color();
-  const boards: THREE.Matrix4[][] = [[], []];
-
-  const quad = (out: number[], cols: number[], pts: number[][], hex: number) => {
-    color.setHex(hex);
-    for (const i of [0, 1, 2, 0, 2, 3]) {
-      out.push(pts[i][0], pts[i][1], pts[i][2]);
-      cols.push(color.r, color.g, color.b);
-    }
-  };
-
-  for (let cy = 0; cy < L.h; cy++) {
-    for (let cx = 0; cx < L.w; cx++) {
-      const c = cellAt(L, cx, cy);
-      if (c.kind === 'void') continue;
-      const [nw, ne, se, sw] = cornerHeights(c);
-      const P = [
-        [cx, nw, cy],
-        [cx + 1, ne, cy],
-        [cx + 1, se, cy + 1],
-        [cx, sw, cy + 1],
-      ];
-      const hex =
-        c.kind === 'block' ? CONCRETE : c.surface === 'mud' ? MUD : c.surface === 'track' ? TRACK : cy % 2 ? TURF_A : TURF_B;
-      quad(top, topCol, [P[0], P[3], P[2], P[1]], hex);
-
-      // Walls of the slab wherever the neighbour is lower or missing.
-      for (let d = 0; d < 4; d++) {
-        const a = P[[0, 1, 2, 3][d]];
-        const b = P[[1, 2, 3, 0][d]];
-        const n = cellAt(L, cx + DIRS[d][0], cy + DIRS[d][1]);
-        let na = SLAB_BOTTOM;
-        let nb = SLAB_BOTTOM;
-        if (n.kind !== 'void') {
-          const nh = cornerHeights(n);
-          // The neighbour's corners that touch this edge, in the same order as a and b.
-          na = nh[[3, 0, 1, 2][d]];
-          nb = nh[[2, 3, 0, 1][d]];
-        }
-        if (a[1] <= na + 1e-6 && b[1] <= nb + 1e-6) continue;
-        const la = Math.min(a[1], na);
-        const lb = Math.min(b[1], nb);
-        if (n.kind === 'void') {
-          // A painted band along the top edge, like the lip of a terrace.
-          const band = 0.09;
-          quad(side, sideCol, [a, b, [b[0], b[1] - band, b[2]], [a[0], a[1] - band, a[2]]], L.def.boards[0]);
-          quad(side, sideCol, [[a[0], a[1] - band, a[2]], [b[0], b[1] - band, b[2]], [b[0], lb, b[2]], [a[0], la, a[2]]], CONCRETE);
-        } else {
-          quad(side, sideCol, [a, b, [b[0], lb, b[2]], [a[0], la, a[2]]], CONCRETE);
-        }
-      }
-
-      if (c.kind === 'block') {
-        const m = new THREE.Matrix4().makeTranslation(cx + 0.5, c.h + WALL_H / 2, cy + 0.5);
-        boards[((cx + cy) >> 1) & 1].push(m);
-      }
-
-      if (c.surface === 'track') {
-        // Two white chevrons pointing the way the track pushes.
-        const [dx, dy] = DIRS[c.dir];
-        for (const off of [-0.22, 0.2]) {
-          const ox = cx + 0.5 + dx * off;
-          const oy = cy + 0.5 + dy * off;
-          const y = c.h + 0.008;
-          marks.push(
-            ox + dx * 0.2, y, oy + dy * 0.2,
-            ox - dx * 0.08 - dy * 0.26, y, oy - dy * 0.08 + dx * 0.26,
-            ox - dx * 0.08 + dy * 0.26, y, oy - dy * 0.08 - dx * 0.26,
-          );
-        }
-      }
-    }
-  }
-
-  const mesh = (pos: number[], cols: number[] | null, mat: THREE.Material) => {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    if (cols) g.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
-    g.computeVertexNormals();
-    const m = new THREE.Mesh(g, mat);
-    m.receiveShadow = true;
-    return m;
-  };
-
-  group.add(mesh(top, topCol, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 })));
-  const walls = mesh(side, sideCol, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, side: THREE.DoubleSide }));
-  walls.castShadow = true;
-  group.add(walls);
-  if (marks.length) {
-    group.add(mesh(marks, null, new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, toneMapped: false })));
-  }
-
-  // Perimeter boards: lit from inside, glossy on the outside, with a seam between panels.
-  const boardGeo = new THREE.BoxGeometry(0.97, WALL_H, 0.97);
-  boards.forEach((list, i) => {
-    if (!list.length) return;
-    const hex = L.def.boards[i];
-    const inst = new THREE.InstancedMesh(
-      boardGeo,
-      new THREE.MeshPhysicalMaterial({ color: hex, emissive: hex, emissiveIntensity: 0.16, roughness: 0.3, clearcoat: 0.9 }),
-      list.length,
-    );
-    list.forEach((m, j) => inst.setMatrixAt(j, m));
-    inst.castShadow = inst.receiveShadow = true;
-    group.add(inst);
-  });
-
-  // Cup, its painted ring and the flag.
-  const cupZ = topAt(L, L.cup.x, L.cup.y);
-  const flat = (geo: THREE.BufferGeometry, hex: number, x: number, y: number, z: number) => {
-    const m = new THREE.Mesh(geo.rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: hex, toneMapped: false }));
-    m.position.set(x, z, y);
-    group.add(m);
-  };
-  flat(new THREE.RingGeometry(CUP_R + 0.16, CUP_R + 0.2, 40), 0xffffff, L.cup.x, L.cup.y, cupZ + 0.006);
-  flat(new THREE.CircleGeometry(CUP_R, 32), 0x05060a, L.cup.x, L.cup.y, cupZ + 0.008);
-  flat(new THREE.CircleGeometry(0.11, 20), 0xffffff, L.tee.x, L.tee.y, topAt(L, L.tee.x, L.tee.y) + 0.006);
-
-  const flag = new THREE.Group();
-  flag.name = 'flag';
-  const pole = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.018, 0.018, 1.5, 8),
-    new THREE.MeshStandardMaterial({ color: 0xf4f4f4, roughness: 0.4 }),
-  );
-  pole.position.y = 0.75;
-  pole.castShadow = true;
-  const cloth = new THREE.Shape([new THREE.Vector2(0, 0), new THREE.Vector2(0.42, 0.14), new THREE.Vector2(0, 0.28)]);
-  const pennant = new THREE.Mesh(
-    new THREE.ShapeGeometry(cloth),
-    new THREE.MeshStandardMaterial({ color: L.def.boards[1], emissive: L.def.boards[1], emissiveIntensity: 0.4, side: THREE.DoubleSide }),
-  );
-  pennant.position.y = 1.2;
-  flag.add(pole, pennant);
-  flag.position.set(L.cup.x, cupZ, L.cup.y);
-  group.add(flag);
-
-  group.add(buildPitch(L));
-  return group;
-}
-
-/** The real pitch far below: mown stripes, the centre circle, and one half already dark. */
-function buildPitch(L: Level): THREE.Mesh {
-  const size = 1024;
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = size;
-  const g = cv.getContext('2d')!;
-  const bands = 16;
-  for (let i = 0; i < bands; i++) {
-    g.fillStyle = i % 2 ? '#0c4a2c' : '#0a3f26';
-    g.fillRect((i * size) / bands, 0, size / bands + 1, size);
-  }
-  g.strokeStyle = 'rgba(255,255,255,0.5)';
-  g.lineWidth = 5;
-  g.beginPath();
-  g.moveTo(size / 2, 0);
-  g.lineTo(size / 2, size);
-  g.stroke();
-  g.beginPath();
-  g.arc(size / 2, size / 2, size * 0.16, 0, Math.PI * 2);
-  g.stroke();
-  g.fillStyle = 'rgba(255,255,255,0.5)';
-  g.beginPath();
-  g.arc(size / 2, size / 2, 7, 0, Math.PI * 2);
-  g.fill();
-  // The far bank of floodlights is off.
-  g.fillStyle = 'rgba(4,7,20,0.72)';
-  g.fillRect(0, 0, size * 0.43, size);
-
-  const tex = new THREE.CanvasTexture(cv);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 8;
-  const span = 64;
-  const m = new THREE.Mesh(
-    new THREE.PlaneGeometry(span, span).rotateX(-Math.PI / 2),
-    new THREE.MeshBasicMaterial({ map: tex, toneMapped: false }),
-  );
-  m.position.set(L.w / 2 + 3, SLAB_BOTTOM - 2.5, L.h / 2 - 2);
-  return m;
-}
-
 function buildPickup(kind: ItemKind): THREE.Group {
   const g = new THREE.Group();
   g.userData.kind = kind;
   const hex = ITEM_COLORS[kind];
-  const mat = new THREE.MeshPhysicalMaterial({ color: hex, roughness: 0.2, clearcoat: 1, emissive: hex, emissiveIntensity: 0.25 });
+  const mat = new THREE.MeshPhysicalMaterial({ color: hex, roughness: 0.2, clearcoat: 1, emissive: hex, emissiveIntensity: 0.5 });
   let prop: THREE.Object3D;
   if (kind === 'drum') {
-    prop = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.2, 24), mat);
-    const skin = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 0.21, 24), new THREE.MeshStandardMaterial({ color: 0xf6efe2 }));
-    prop.add(skin);
-    prop.rotation.z = 0.5;
+    // A supporters' bass drum on its side.
+    prop = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.2, 28), mat);
+    const skin = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.175, 0.175, 0.215, 28),
+      new THREE.MeshStandardMaterial({ color: 0xf6efe2, roughness: 0.6 }),
+    );
+    const hoop = new THREE.Mesh(
+      new THREE.TorusGeometry(0.2, 0.018, 8, 28).rotateX(Math.PI / 2),
+      new THREE.MeshStandardMaterial({ color: 0xd8dde6, metalness: 0.9, roughness: 0.3 }),
+    );
+    hoop.position.y = 0.09;
+    const hoop2 = hoop.clone();
+    hoop2.position.y = -0.09;
+    prop.add(skin, hoop, hoop2);
+    prop.rotation.z = 0.55;
   } else if (kind === 'sandal') {
-    prop = new THREE.Mesh(new THREE.CapsuleGeometry(0.1, 0.18, 6, 16), mat);
-    prop.scale.set(1, 1, 0.3);
-    prop.rotation.x = 1.1;
+    // A flip-flop: sole and a thong strap.
+    prop = new THREE.Mesh(new THREE.CapsuleGeometry(0.11, 0.22, 6, 18), mat);
+    prop.scale.set(1, 1, 0.22);
+    const strap = new THREE.Mesh(
+      new THREE.TorusGeometry(0.085, 0.02, 8, 18, Math.PI),
+      new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5 }),
+    );
+    strap.position.set(0, 0.07, 0.11);
+    strap.scale.set(1, 1, 3.2);
+    strap.rotation.x = -0.2;
+    prop.add(strap);
+    prop.rotation.x = 1.0;
   } else if (kind === 'swap') {
-    prop = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.05, 10, 28), mat);
-  } else {
+    // Two rings linked.
     prop = new THREE.Group();
-    for (const y of [-0.08, 0.08]) {
-      const nut = new THREE.Mesh(new THREE.SphereGeometry(0.11, 16, 12), mat);
+    const a = new THREE.Mesh(new THREE.TorusGeometry(0.14, 0.045, 10, 28), mat);
+    a.position.x = -0.09;
+    const b = new THREE.Mesh(
+      new THREE.TorusGeometry(0.14, 0.045, 10, 28),
+      new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.2, clearcoat: 1 }),
+    );
+    b.position.x = 0.09;
+    b.rotation.x = Math.PI / 2;
+    prop.add(a, b);
+  } else {
+    // A peanut in its shell.
+    prop = new THREE.Group();
+    const shell = new THREE.MeshPhysicalMaterial({ color: 0xe2c48a, roughness: 0.6, emissive: hex, emissiveIntensity: 0.18 });
+    for (const y of [-0.09, 0.09]) {
+      const nut = new THREE.Mesh(new THREE.SphereGeometry(0.12, 18, 14), shell);
       nut.position.y = y;
+      nut.scale.set(1, 1.15, 1);
       prop.add(nut);
     }
     prop.rotation.z = 0.6;
   }
   prop.traverse((o) => (o.castShadow = true));
   const ring = new THREE.Mesh(
-    new THREE.RingGeometry(0.26, 0.3, 32).rotateX(-Math.PI / 2),
-    new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }),
+    new THREE.RingGeometry(0.3, 0.36, 40).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({ color: new THREE.Color(hex).multiplyScalar(1.8), transparent: true, depthWrite: false }),
   );
-  ring.position.y = 0.007;
-  g.add(prop, ring);
+  ring.position.y = 0.01;
+  // A soft column of light so pickups can be found from across the hole.
+  const beam = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.2, 0.3, 1.5, 20, 1, true),
+    new THREE.MeshBasicMaterial({
+      color: hex,
+      transparent: true,
+      opacity: 0.1,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+    }),
+  );
+  beam.position.y = 0.75;
+  g.add(prop, ring, beam);
   return g;
 }

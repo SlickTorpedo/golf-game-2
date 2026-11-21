@@ -8,6 +8,7 @@
   </head>
   <body>
     <canvas id="view"></canvas>
+    <div id="vignette"></div>
     <div id="labels"></div>
 
     <div id="hud" hidden>
@@ -19,12 +20,12 @@
         <div id="items"></div>
       </div>
       <div id="tools">
-        <button id="rotL" title="Turn the view left (Q)">Turn ↺</button>
-        <button id="rotR" title="Turn the view right (E)">Turn ↻</button>
-        <button id="mute">Sound on</button>
+        <button id="music"></button>
+        <button id="sfx"></button>
       </div>
+      <div id="power" hidden><b id="powerNum"></b><span>power</span><i></i></div>
       <div id="toast"></div>
-      <div id="hint">Drag back anywhere, let go to putt. Scroll to zoom.</div>
+      <div id="hint">Left-drag back and let go to putt · right-drag to look around · scroll to zoom</div>
     </div>
 
     <section id="title">

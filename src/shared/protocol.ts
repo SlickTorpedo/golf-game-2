@@ -1,4 +1,4 @@
-import type { Ball } from './physics';
+import type { Ball, HitMaterial } from './physics';
 
 // Everything that crosses the wire is declared here. All of it is plain JSON.
 
@@ -56,10 +56,13 @@ export interface MatchState {
 export type GameEvent =
   | { t: 'phase'; phase: Phase }
   | { t: 'putt'; p: string; power: number }
-  | { t: 'bounce'; p: string; v: number }
-  | { t: 'land'; p: string }
+  | { t: 'bounce'; p: string; v: number; m: HitMaterial; x: number; y: number }
+  | { t: 'land'; p: string; v: number }
   | { t: 'holed'; p: string; strokes: number }
-  | { t: 'out'; p: string }
+  /** Lost off the edge or in water, at this spot. */
+  | { t: 'out'; p: string; x: number; y: number; z: number; water: boolean }
+  | { t: 'tunnel'; p: string; x: number; y: number }
+  | { t: 'boost'; p: string }
   | { t: 'pickup'; p: string; kind: ItemKind }
   | { t: 'item'; p: string; kind: ItemKind; x: number; y: number };
 

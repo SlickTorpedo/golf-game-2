@@ -4,7 +4,7 @@ Mini golf in a football stadium after the match. The crowd has gone, one bank
 of floodlights is already off, and the people who stay behind putt across the
 terraces. *Bubaran* is Javanese for the moment a crowd lets out.
 
-Everyone putts at the same time. Fewest putts over six holes wins. It runs
+Everyone putts at the same time. Fewest putts over nine holes wins. It runs
 entirely in the browser; there is no backend.
 
 ## Run it
@@ -19,15 +19,20 @@ npm run dev
 
 ## How to play
 
-- Drag back anywhere on the screen and let go to putt. The dots show the line.
-- Scroll to zoom. `Q` / `E` turn the view.
+- Left mouse button: drag back anywhere and let go to putt. The dotted line is
+  the first stretch of the putt as the game will really play it, bounces included.
+- Right mouse button: drag to look around. Scroll to zoom.
+- On a touch screen: one finger putts, two fingers look around and pinch to zoom.
 - Roll over something the crowd left behind to pick it up, then press `1` or `2`:
   - **Bass drum** throws nearby balls outward.
   - **Flip-flop** stops your rolling ball dead.
   - **Swap** trades places with the ball nearest the cup.
   - **Peanuts** takes your last putt back.
-- Off the edge costs a putt. Eight putts or 90 seconds without holing out
-  scores 10.
+- Off the edge or into the water costs a putt. Eight putts or 90 seconds
+  without holing out scores 10.
+- On the course: running track pushes the ball, mud stops it, traffic cones
+  kick it away, turnstiles bat it, and the players' tunnel carries it to the
+  other end. A ball that reaches the cup too fast lips out.
 
 ## How it is put together
 
@@ -39,6 +44,8 @@ src/shared/   rules, physics, bots, holes, message types. No DOM. Runs anywhere.
 src/server/   Room: owns one match, takes commands, sends snapshots.
 src/net/      Channel: a two-way message pipe. Today a local in-page pair.
 src/client/   connection, 3D view (three.js), HUD, input, sound.
+              world.ts camera, lights, balls, effects · course.ts one hole as a scene
+              stadium.ts the scenery · textures.ts painted at start-up · audio* synthesised
 ```
 
 - `Match` (`src/shared/match.ts`) is the only place state changes. It takes
@@ -66,9 +73,13 @@ src/client/   connection, 3D view (three.js), HUD, input, sound.
 What is still missing for play over the internet: predicting your own putt
 locally so it does not wait a round trip, and sending smaller snapshots.
 Open the game with `?lag=150` to feel a 150 ms round trip today.
-`?debug` puts the room and client on `window.game`.
+`?debug` puts the room and client on `window.game`. `dev/` holds preview
+pages used while building (`/dev/course.html?h=3` shows one hole).
 
 ## Making holes
+
+Nothing is loaded from image or audio files: textures are painted on canvases
+and every sound and the music are synthesised when the page starts.
 
 Holes are text grids in `src/shared/courses.ts`. The legend is at the top of
 `src/shared/level.ts`. The test suite checks that every hole can be finished.

@@ -1,5 +1,5 @@
 import type { Channel } from '../net/channel';
-import { PROTOCOL_VERSION } from '../shared/constants';
+import { PROTOCOL_VERSION, SNAPSHOT_EVERY, TICK_MS } from '../shared/constants';
 import type { ClientMsg, GameEvent, MatchState, PlayerState, ServerMsg } from '../shared/protocol';
 
 interface Snap {
@@ -38,6 +38,12 @@ export class GameClient {
 
   send(msg: ClientMsg): void {
     this.ch.send(msg);
+  }
+
+  /** The game tick being drawn right now, with a fraction, one snapshot behind the newest. */
+  tickAt(now: number): number {
+    if (!this.curr) return 0;
+    return this.curr.state.tick - SNAPSHOT_EVERY + Math.min(SNAPSHOT_EVERY * 2, (now - this.curr.at) / TICK_MS);
   }
 
   /** Smoothed ball position for drawing. */

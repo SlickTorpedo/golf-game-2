@@ -15,22 +15,36 @@ export const LEVEL_H = 0.5; // height of one terrace level
 export const WALL_H = 0.5; // height of a board above the floor it stands on
 export const STEP_UP = 0.12; // ledges lower than this are rolled over
 
-export const GRAVITY = 20;
-export const SLOPE_ACCEL = 9;
-export const BOOST_ACCEL = 30;
-export const ROLL_DECEL = 3;
-export const MUD_DECEL = 14;
-export const DRAG = 0.9;
-export const STOP_SPEED = 0.06;
-export const RESTITUTION = 0.72;
-export const MAX_SPEED = 19;
+export const GRAVITY = 30;
+export const SLOPE_ACCEL = 8;
+export const BOOST_ACCEL = 26;
+// A heavy ball: little air drag, so it carries its speed and then dies on the turf.
+export const ROLL_DECEL = 3.4;
+export const MUD_DECEL = 15;
+export const DRAG = 0.35;
+export const STOP_SPEED = 0.07;
+export const RESTITUTION = 0.6; // off boards and ledges
+export const WALL_GRIP = 0.94; // share of sideways speed kept in a wall hit
+export const FLOOR_BOUNCE = 0.38; // hop when landing from a drop
+export const MAX_SPEED = 17;
 
-export const MIN_PUTT = 1.2;
-export const MAX_PUTT = 16;
+export const MIN_PUTT = 0.8;
+export const MAX_PUTT = 12.5;
 
 export const CUP_R = 0.27;
-export const CUP_MAX_SPEED = 7.5;
-export const KILL_Z = -5;
+export const CUP_MAX_SPEED = 5.5; // faster than this and it lips out
+export const CUP_PULL = 16; // the lip tugs a fast ball sideways
+export const CUP_SLOPE = 2.2; // a slow ball close by trickles in
+
+export const CONE_R = 0.22;
+export const CONE_KICK = 3.5;
+export const ARM_LEN = 1.3; // turnstile arm, centre to tip
+export const ARM_R = 0.07;
+export const SPIN_RATE = 1.5; // radians per second
+export const TUNNEL_R = 0.3;
+/** The pitch is this far below level 0; a falling ball is lost when it gets there. */
+export const PITCH_DROP = 3.5;
+export const KILL_Z = -PITCH_DROP + BALL_R;
 
 export const STROKE_CAP = 8;
 export const PENALTY_SCORE = 10;

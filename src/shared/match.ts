@@ -1,7 +1,5 @@
 import { Nav, buildNav, planPutt } from './bots';
 import {
-  CUP_MAX_SPEED,
-  CUP_R,
   DRUM_PUSH,
   DRUM_RADIUS,
   HOLE_END_SECONDS,
@@ -18,7 +16,7 @@ import {
   TICK_RATE,
 } from './constants';
 import { HoleDef, Level, parseLevel, topAt } from './level';
-import { isGrounded, isMoving, stepBall } from './physics';
+import { isMoving, nearSpinner, stepBall } from './physics';
 import { ClientMsg, GameEvent, ITEM_KINDS, ItemKind, MatchState, PlayerState } from './protocol';
 
 // The people still in the stadium after the match.
@@ -143,26 +141,25 @@ export class Match {
     for (const p of s.players) {
       if (p.done) continue;
 
-      if (p.moving) {
-        const r = stepBall(L, p.ball);
+      // A ball at rest is left alone unless a turnstile arm can reach it.
+      if (p.moving || nearSpinner(L, p.ball)) {
+        const b = p.ball;
+        const from = { x: b.x, y: b.y };
+        const r = stepBall(L, b, s.tick);
         if (r.oob) {
-          this.events.push({ t: 'out', p: p.id });
+          this.events.push({ t: 'out', p: p.id, x: b.x, y: b.y, z: b.z, water: r.splash });
           p.strokes++;
           this.placeAt(p, p.restX, p.restY);
+        } else if (r.holed) {
+          this.placeAt(p, L.cup.x, L.cup.y);
+          this.finish(p, true);
+          this.events.push({ t: 'holed', p: p.id, strokes: p.strokes });
+          continue;
         } else {
-          if (r.impact > 1.2) this.events.push({ t: 'bounce', p: p.id, v: r.impact });
-          if (r.landed > 2) this.events.push({ t: 'land', p: p.id });
-          const b = p.ball;
-          if (
-            isGrounded(L, b) &&
-            Math.hypot(b.x - L.cup.x, b.y - L.cup.y) < CUP_R &&
-            Math.hypot(b.vx, b.vy) < CUP_MAX_SPEED
-          ) {
-            this.placeAt(p, L.cup.x, L.cup.y);
-            this.finish(p, true);
-            this.events.push({ t: 'holed', p: p.id, strokes: p.strokes });
-            continue;
-          }
+          if (r.impact > 0.8) this.events.push({ t: 'bounce', p: p.id, v: r.impact, m: r.material, x: b.x, y: b.y });
+          if (r.landed > 0) this.events.push({ t: 'land', p: p.id, v: r.landed });
+          if (r.tunnel) this.events.push({ t: 'tunnel', p: p.id, x: from.x, y: from.y });
+          if (r.boost) this.events.push({ t: 'boost', p: p.id });
           p.moving = isMoving(L, b);
         }
         if (!p.moving && p.strokes >= STROKE_CAP) {
