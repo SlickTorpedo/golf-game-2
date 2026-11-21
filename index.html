@@ -27,7 +27,7 @@
         <button id="music"></button>
         <button id="sfx"></button>
       </div>
-      <div id="power" hidden><b id="powerNum"></b><span>power</span><i></i></div>
+      <div id="power" hidden><b id="powerNum"></b><span id="powerNote">power</span><i></i></div>
       <div id="toast"></div>
       <div id="hint">Left-drag back and let go to putt · right-drag to look around · scroll to zoom · C changes view</div>
     </div>
@@ -38,11 +38,24 @@
         <p class="lead">The match is over and the stands are empty. The groundsman, the tea seller and the ball boy are putting across the terraces.</p>
         <p class="gloss"><b>bubaran</b> — Javanese for the moment a crowd lets out.</p>
         <label>Your name <input id="name" maxlength="14" autocomplete="off" spellcheck="false" /></label>
-        <fieldset>
+        <fieldset id="fsCourse">
+          <legend>Course</legend>
+          <div id="courses"></div>
+        </fieldset>
+        <fieldset id="fsBots">
           <legend>Who stays behind with you</legend>
           <div id="bots"></div>
         </fieldset>
-        <button type="submit">Kick off</button>
+        <fieldset id="fsNet">
+          <legend>With friends</legend>
+          <div id="netBox">
+            <button type="button" id="hostBtn">Host a room</button>
+            <span id="joinRow"><input id="joinCode" maxlength="5" placeholder="CODE" autocomplete="off" spellcheck="false" /><button type="button" id="joinBtn">Join</button></span>
+          </div>
+          <p id="netNote" hidden></p>
+          <ul id="roster"></ul>
+        </fieldset>
+        <button type="submit" id="kickBtn">Kick off</button>
       </form>
     </section>
 

@@ -1,6 +1,6 @@
 import type { Channel } from '../net/channel';
 import { MAX_PLAYERS, PROTOCOL_VERSION, SNAPSHOT_EVERY, TICK_MS } from '../shared/constants';
-import type { HoleDef } from '../shared/level';
+import type { Course } from '../shared/courses';
 import { Match, cleanName } from '../shared/match';
 import type { ClientMsg, GameEvent, ServerMsg } from '../shared/protocol';
 
@@ -20,8 +20,11 @@ export class Room {
   private nextId = 1;
   private acc = 0;
 
-  constructor(holes: HoleDef[], seed: number) {
-    this.match = new Match(holes, seed);
+  constructor(
+    private readonly courses: Course[],
+    seed: number,
+  ) {
+    this.match = new Match(courses[0].holes, seed, courses[0].id);
   }
 
   /** Take a new connection. The player joins once they say hello. */
@@ -68,6 +71,8 @@ export class Room {
       if (id !== this.hostId || (phase !== 'lobby' && phase !== 'final')) return;
       const me = this.match.player(id);
       if (me) me.name = cleanName(msg.name);
+      const course = this.courses.find((c) => c.id === msg.course) ?? this.courses[0];
+      this.match.load(course.holes, course.id);
       this.match.start(Number(msg.bots) || 0);
       return;
     }

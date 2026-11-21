@@ -172,8 +172,9 @@ export function compileLevel(def: HoleDef): Level {
       const kw = key(w);
       const k = ku < kw ? `${ku}|${kw}` : `${kw}|${ku}`;
       const e = edges.get(k);
-      if (e) e.n++;
-      else edges.set(k, { n: 1, a: u, b: w, bridge: !!t.bridge });
+      // Count solid ground only: a bridge next to it does not close the edge off from below.
+      if (e) e.n += t.bridge ? 0 : 1;
+      else edges.set(k, { n: t.bridge ? 0 : 1, a: u, b: w, bridge: !!t.bridge });
     }
   }
   if (!tris.length) throw new Error(`${def.id}: no ground`);
@@ -182,7 +183,7 @@ export function compileLevel(def: HoleDef): Level {
   // ball rolls off it; from below it is a cliff face.
   const colliders: Collider[] = [];
   for (const e of edges.values()) {
-    if (e.n !== 1 || e.bridge) continue;
+    if (e.n !== 1) continue;
     colliders.push({ ax: e.a[0], ay: e.a[1], bx: e.b[0], by: e.b[1], ta: e.a[2], tb: e.b[2], kind: 'cliff' });
   }
   for (const w of def.walls) {

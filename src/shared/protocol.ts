@@ -5,8 +5,8 @@ import type { Ball, HitMaterial } from './physics';
 export type Phase = 'lobby' | 'intro' | 'playing' | 'holeEnd' | 'final';
 
 /** Things the crowd left behind. */
-export type ItemKind = 'drum' | 'sandal' | 'swap' | 'peanuts';
-export const ITEM_KINDS: readonly ItemKind[] = ['drum', 'sandal', 'swap', 'peanuts'];
+export type ItemKind = 'drum' | 'sandal' | 'swap' | 'peanuts' | 'steady' | 'magnet' | 'horn';
+export const ITEM_KINDS: readonly ItemKind[] = ['drum', 'sandal', 'swap', 'peanuts', 'steady', 'magnet', 'horn'];
 
 export interface PlayerState {
   id: string;
@@ -28,8 +28,16 @@ export interface PlayerState {
   /** One entry per finished hole. */
   scores: number[];
   items: ItemKind[];
+  /** Putts left with no sway on the aim (iced tea). */
+  steady: number;
+  /** Putts left with a much wider sway (someone's air horn). */
+  jitters: number;
+  /** The cup is pulling this ball in from further off, until it stops (lucky scarf). */
+  magnet: boolean;
   /** Tallies for the awards at full time. */
   stats: { falls: number; hits: number; items: number; aces: number; air: number };
+  /** Where the ball was when it last got clear of a spot, and how many ticks it has dithered there since. */
+  park: [number, number, number];
   /** Ticks until a bot putts again. */
   wait: number;
 }
@@ -46,6 +54,8 @@ export interface Pickup {
 
 export interface MatchState {
   phase: Phase;
+  /** Id of the course being played. */
+  course: string;
   hole: number;
   holeCount: number;
   tick: number;
@@ -74,7 +84,7 @@ export type GameEvent =
 
 export type ClientMsg =
   | { t: 'hello'; v: number; name: string }
-  | { t: 'start'; name: string; bots: number }
+  | { t: 'start'; name: string; bots: number; course: string }
   | { t: 'putt'; dx: number; dy: number }
   | { t: 'item'; slot: number }
   | { t: 'ready' }

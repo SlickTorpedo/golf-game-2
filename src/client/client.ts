@@ -17,6 +17,9 @@ export class GameClient {
   host = false;
   refused: string | null = null;
   onEvents: (events: GameEvent[], state: MatchState) => void = () => {};
+  /** The link to the room has gone. */
+  closed = false;
+  onClosed: () => void = () => {};
   private prev: Snap | null = null;
   private curr: Snap | null = null;
 
@@ -25,6 +28,10 @@ export class GameClient {
     name: string,
   ) {
     ch.onMessage((msg) => this.receive(msg));
+    ch.onClose(() => {
+      this.closed = true;
+      this.onClosed();
+    });
     ch.send({ t: 'hello', v: PROTOCOL_VERSION, name });
   }
 

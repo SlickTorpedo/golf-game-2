@@ -4,8 +4,10 @@ Mini golf in a football stadium after the match. The crowd has gone, one bank
 of floodlights is already off, and the people who stay behind putt across the
 terraces. *Bubaran* is Javanese for the moment a crowd lets out.
 
-Everyone putts at the same time. Fewest putts over nine holes wins. It runs
-entirely in the browser; there is no backend.
+Everyone putts at the same time and the fewest putts wins. There are two
+courses: **Cup Run**, six big holes with several routes each, and **Matchday**,
+nine short ones. Play alone against bots or with friends. It runs entirely in
+the browser; there is no game server.
 
 ## Run it
 
@@ -21,6 +23,8 @@ npm run dev
 
 - Left mouse button: drag back anywhere and let go to putt. The dotted line is
   the first stretch of the putt as the game will really play it, bounces included.
+- The aim sways slowly from side to side while you hold it, so you time the
+  release.
 - Right mouse button: drag to look around. Scroll to zoom.
 - `C` or the buttons bottom right change the view: **Follow** sits low behind
   your ball, closes in while it rolls and eases back when it stops; **Wide**
@@ -32,8 +36,14 @@ npm run dev
   - **Flip-flop** stops your rolling ball dead.
   - **Swap** trades places with the ball nearest the cup.
   - **Peanuts** takes your last putt back.
-- Off the edge or into the water costs a putt. Eight putts or 90 seconds
-  without holing out scores 9, or par + 4 if that is less.
+  - **Iced tea** stills the sway for your next two putts.
+  - **Lucky scarf** makes the cup pull your ball in until it next stops.
+  - **Air horn** makes everyone else's next aim sway wildly.
+- Off the edge or into the water costs a putt. The clock and the putt limit
+  grow with the hole (a par 7 gets 220 seconds and 16 putts); not holing out
+  scores par + 4.
+- Anything standing between the camera and your ball thins to a see-through
+  window, so a wall never hides it.
 - Walls come in three heights. A kerb stops a gentle ball and a firm one hops
   over it. A rail takes a full-blooded hit to clear. Nothing gets over an
   advertising board. Where there is no wall, the ball goes over the edge.
@@ -41,6 +51,20 @@ npm run dev
   ice barely slows it, springs throw it up, traffic cones kick it away,
   turnstiles bat it, and the players' tunnel carries it to the other end. A
   ball that reaches the cup too fast lips out.
+
+## Playing with friends
+
+On the title screen press **Host a room**. You get a five-letter code and a
+link to copy. Friends open the link (or type the code) and press **Join**;
+you press **Kick off** when everyone is in. Up to eight players, and bots can
+fill the rest.
+
+There is no game server. The host's tab runs the game and the other tabs
+connect straight to it (WebRTC, through the `peerjs` library). The public
+PeerJS broker is used only to introduce the tabs to each other; it sees the
+room code, not the game. Two consequences: the room lasts as long as the
+host's tab stays open, and on a few strict networks (some offices and
+schools) a direct connection cannot be made.
 
 ## How it is put together
 
@@ -52,7 +76,8 @@ src/shared/   rules, physics, bots, message types. No DOM. Runs anywhere.
               level.ts what a hole is · builder.ts the kit holes are made with
               holes/ one file per hole · courses.ts the playing order
 src/server/   Room: owns one match, takes commands, sends snapshots.
-src/net/      Channel: a two-way message pipe. Today a local in-page pair.
+src/net/      Channel: a two-way message pipe. channel.ts is the in-page pair,
+              peer.ts the same thing between two browsers.
 src/client/   connection, 3D view (three.js), HUD, input, sound.
               world.ts camera, lights, balls, effects · course.ts one hole as a scene
               stadium.ts the scenery · textures.ts painted at start-up · audio* synthesised
@@ -69,20 +94,15 @@ src/client/   connection, 3D view (three.js), HUD, input, sound.
 - The local channel sends every message through JSON, so anything that would
   not survive a real network fails now, not later.
 
-### Adding real multiplayer
+### If you want a server instead
 
-1. Write a `Channel` over WebSocket (or a WebRTC data channel) in `src/net/`.
-2. Run `Room` under Node with a `setInterval` calling `room.advance(ms)`, and
-   hand each socket to `room.connect()`. Or keep the room in the host's tab
-   and connect friends peer to peer.
-3. In `src/client/main.ts`, build the client on that channel instead of
-   `createLocalPair()`.
-4. Add a lobby screen. The room already tracks a host, takes up to 8 players,
-   fills empty seats with bots and handles people leaving.
+`Room` uses nothing from the browser. To host games on a server, write a
+`Channel` over WebSocket in `src/net/`, run `Room` under Node with a timer
+calling `room.advance(ms)`, and hand each socket to `room.connect()`.
 
-What is still missing for play over the internet: predicting your own putt
-locally so it does not wait a round trip, and sending smaller snapshots.
-Open the game with `?lag=150` to feel a 150 ms round trip today.
+Not built yet: predicting your own putt locally (today it waits for the
+host, which is fine on a good link and noticeable on a slow one) and smaller
+snapshots. `?lag=150` fakes a 150 ms round trip in solo play.
 `?debug` puts the room and client on `window.game`. `dev/` holds preview
 pages used while building (`/dev/course.html?h=kickoff&view=top` shows one hole).
 

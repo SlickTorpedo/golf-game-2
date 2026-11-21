@@ -8,7 +8,7 @@
 // Drag to look around, wheel to zoom.
 import '@fontsource/barlow-condensed/600.css';
 import '@fontsource/barlow-condensed/800-italic.css';
-import { STADIUM } from '../src/shared/courses';
+import { ALL_HOLES } from '../src/shared/courses';
 import { compileLevel } from '../src/shared/level';
 import { PLAYER_COLORS, World } from '../src/client/world';
 
@@ -18,7 +18,7 @@ await Promise.all([
 ]);
 const q = new URLSearchParams(location.search);
 const want = q.get('h') ?? '0';
-const def = STADIUM.find((d) => d.id === want) ?? STADIUM[Number(want) || 0];
+const def = ALL_HOLES.find((d) => d.id === want) ?? ALL_HOLES[Number(want) || 0];
 const L = compileLevel(def);
 document.title = `${def.id} (par ${def.par})`;
 

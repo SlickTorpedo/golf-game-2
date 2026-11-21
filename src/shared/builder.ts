@@ -25,6 +25,8 @@ export interface SegOpts {
   bridge?: boolean;
   /** Turns only: raise the outside edge by this much at the middle of the bend. */
   bank?: number;
+  /** Turns only: raise the outside edge by this much for the whole bend, like a velodrome. */
+  tilt?: number;
 }
 
 interface Pen {
@@ -135,7 +137,10 @@ export class HoleBuilder {
       const y = cy - r[1] * radius * dir;
       const z = z0 + (o.rise ?? 0) * t;
       // The bank comes in and goes out smoothly, and always lifts the outside of the bend.
-      const bank = (o.bank ?? 0) * Math.sin(Math.PI * t) * dir;
+      // A tilt holds for the whole bend but eases in and out over its first and last eighth,
+      // so it meets the flat ground either side without a step.
+      const ease = Math.min(1, t * 8, (1 - t) * 8);
+      const bank = ((o.bank ?? 0) * Math.sin(Math.PI * t) + (o.tilt ?? 0) * ease) * dir;
       const cur = this.section(x, y, z, h, w0 + (w1 - w0) * t, bank);
       this.strip(prev, cur, o);
       prev = cur;
@@ -253,8 +258,20 @@ export class HoleBuilder {
    * A round patch of ground. gaps are stretches of the rim left without wall,
    * as [fromDegrees, toDegrees] pairs measured like headings (0 east, 90 south).
    */
-  disc(x: number, y: number, r: number, z: number, o: { mat?: Mat; wall?: Side; gaps?: [number, number][]; segments?: number } = {}): this {
+  disc(
+    x: number,
+    y: number,
+    r: number,
+    z: number,
+    o: { mat?: Mat; wall?: Side; gaps?: [number, number][]; mouths?: [number, number][]; segments?: number; bridge?: boolean } = {},
+  ): this {
     const n = o.segments ?? 32;
+    // A mouth is an opening for a lane: [the heading from the centre to it, the lane's width].
+    const gaps = [...(o.gaps ?? [])];
+    for (const [heading, width] of o.mouths ?? []) {
+      const half = (Math.asin(Math.min(1, width / 2 / r)) * 180) / Math.PI;
+      gaps.push([heading - half, heading + half]);
+    }
     const base = this.verts.length / 3;
     this.verts.push(x, y, z);
     for (let i = 0; i < n; i++) {
@@ -263,9 +280,9 @@ export class HoleBuilder {
     }
     for (let i = 0; i < n; i++) {
       const j = (i + 1) % n;
-      this.tris.push({ v: [base, base + 1 + i, base + 1 + j], mat: o.mat ?? 'turf' });
+      this.tris.push({ v: [base, base + 1 + i, base + 1 + j], mat: o.mat ?? 'turf', ...(o.bridge ? { bridge: true } : {}) });
       const mid = ((i + 0.5) / n) * 360;
-      const open = (o.gaps ?? []).some(([from, to]) => {
+      const open = gaps.some(([from, to]) => {
         const span = (((to - from) % 360) + 360) % 360;
         return (((mid - from) % 360) + 360) % 360 <= span;
       });
@@ -309,12 +326,15 @@ export class HoleBuilder {
     return this;
   }
 
-  /** A free-standing wall through these points. It stands on whatever ground is under each point. */
-  wall(points: [number, number][], kind: WallKind = 'rail'): this {
+  /**
+   * A free-standing wall through these points. It stands on the highest ground under each
+   * point; give z to stand it at one height instead (for a wall on a level under an overhang).
+   */
+  wall(points: [number, number][], kind: WallKind = 'rail', z?: number): this {
     for (let i = 0; i + 1 < points.length; i++) {
       const [ax, ay] = points[i];
       const [bx, by] = points[i + 1];
-      this.wallList.push({ a: { x: ax, y: ay, z: this.groundZ(ax, ay) }, b: { x: bx, y: by, z: this.groundZ(bx, by) }, kind });
+      this.wallList.push({ a: { x: ax, y: ay, z: z ?? this.groundZ(ax, ay) }, b: { x: bx, y: by, z: z ?? this.groundZ(bx, by) }, kind });
     }
     return this;
   }
@@ -373,7 +393,13 @@ export class HoleBuilder {
       ...(o.boost ? { push: [f[0], f[1]] as [number, number] } : {}),
       ...(o.bridge ? { bridge: true } : {}),
     };
-    this.tris.push({ v: [base, base + 1, base + 2], ...extra }, { v: [base, base + 2, base + 3], ...extra });
+    // A twisted piece (a bank coming in or out) is not flat. Fold it along its higher diagonal,
+    // so the fold is a ridge and never a pocket a ball could sit in.
+    if (a.l.z + b.r.z >= a.r.z + b.l.z) {
+      this.tris.push({ v: [base, base + 1, base + 2], ...extra }, { v: [base, base + 2, base + 3], ...extra });
+    } else {
+      this.tris.push({ v: [base, base + 1, base + 3], ...extra }, { v: [base + 1, base + 2, base + 3], ...extra });
+    }
     const left = o.left ?? this.pen.left;
     const right = o.right ?? this.pen.right;
     if (left !== 'none') this.wallList.push({ a: a.l, b: b.l, kind: left });

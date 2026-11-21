@@ -3,10 +3,12 @@ import { LIME, VIOLET } from './palette';
 
 // Hole 3 teaches height: the green is four terrace levels below the tee, and
 // dropping is free.
-// Ace: straight down the steps. The ball skips from tread to tread and has to
-//   die at the cup, so it is a touch shot, not a hard one.
-// Safe: the walled ramp that loops out to the east and back, then one small
-//   step down onto the green. Three easy putts.
+// Ace: straight down the steps, aimed a touch left at the cup on the east
+//   side of the green. The ball skips from tread to tread and has to die at
+//   the cup: 0.6 to 0.85 power, within a degree of the line. Harder runs past
+//   and the back board throws it off to the side.
+// Safe: the walled ramp that loops out to the east and back, then a step
+//   down onto the green. Three easy putts.
 // Shortcut: the steps. They narrow on the way down and their west side has
 //   no wall at all, so a putt pulled right is gone.
 const b = new HoleBuilder({ id: 'tribune', name: 'Tribune Steps', par: 3, boards: [VIOLET, LIME] });
@@ -51,9 +53,10 @@ for (let n = 0; n < 3; n++) {
 }
 
 // The ramp: out east along the top, then two banked right-hand bends that
-// bring it back west one step above the green.
+// bring it back west above the green. They fall gently, and their bank is
+// slight, so a ball that runs out of pace on them stops instead of creeping.
 const RAMP_R = (GREEN_Y - 2.6 - 0.9) / 2;
-const RAMP_BEND = { rise: -0.75, bank: 0.2, left: 'board' } as const;
+const RAMP_BEND = { rise: -0.6, bank: 0.1, left: 'board' } as const;
 b.at(LANE / 2, 2.6, 0, TOP)
   .width(LANE)
   .walls('rail')
@@ -66,6 +69,8 @@ b.at(LANE / 2, 2.6, 0, TOP)
   .straight(LANE / 2 + 1.6 - RAMP_MOUTH_TO_CENTRE);
 
 b.disc(0, GREEN_Y, GREEN_R, 0, { wall: 'board', gaps: [[-33.75, 33.75], [247.5, 292.5]] });
-b.at(0, GREEN_Y, 90).cup();
+// The cup sits east of centre, so a hard putt down the steps meets the back
+// board at an angle and is not sent straight back into it.
+b.at(0, GREEN_Y, 90).cup(0, -0.6);
 
 export default b.build();

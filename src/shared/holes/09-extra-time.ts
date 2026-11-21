@@ -6,13 +6,13 @@ import { CYAN, ORANGE } from './palette';
 //
 // Ace line: a firm putt due east down the track; the ramp throws the ball over
 //   the pit, it lands on the green and comes back off the board behind. Aimed
-//   a touch right of centre and hit nearly flat out, it drops.
+//   three to four degrees right of due east at 0.7 power or more, it drops.
 // Safe line: out of the circle to the south-east, round the big bowl bend
 //   (downhill all the way, board on the outside) and onto the green from the
 //   south. Three putts.
-// Shortcut: the jump. It needs about three quarters power or more from the
-//   tee. A softer putt that only just reaches the track is fired off the ramp
-//   too slowly and falls in the pit: ball lost, back to the tee.
+// Shortcut: the jump. It needs two-thirds power or more from the tee. A
+//   softer putt that only just reaches the track is fired off the ramp too
+//   slowly and falls in the pit: ball lost, back to the tee.
 const b = new HoleBuilder({ id: 'extra-time', name: 'Extra Time', par: 3, boards: [ORANGE, CYAN] });
 
 const TOP = 1.5; // the centre circle
@@ -36,9 +36,9 @@ interface Pose {
 }
 
 /**
- * Lay a bend by hand, panel by panel, the way turn() is meant to (see the
- * report: turn() currently lays the second half of every bend wrongly).
- * Positive angle is to the right. Returns where the bend ends.
+ * Lay a bend panel by panel, like turn(), but with as many route points
+ * ("stones") along it as the bots need. Positive angle is to the right.
+ * Returns where the bend ends.
  */
 function bend(
   from: Pose,
@@ -94,14 +94,15 @@ function arc(cx: number, cy: number, r: number, from: number, to: number, steps:
 b.disc(0, 0, CIRCLE_R, TOP, { wall: 'rail', gaps: [[-20, 20], [36, 76]] });
 b.at(-1.5, 0, 0, TOP).tee();
 
-// The safe way: a long downhill bowl round the south side of the pit.
+// The safe way: a long downhill bowl round the south side of the pit. Its bank
+// is slight, so a ball that runs out of pace in it settles.
 const out = ahead(BOWL_HEADING);
 b.at(out[0] * MOUTH_AT, out[1] * MOUTH_AT, BOWL_HEADING, TOP).width(MOUTH).walls('rail', 'board').straight(1.2, { width: 2.6 });
 const bowlEnd = bend(
   { x: out[0] * (MOUTH_AT + 1.2), y: out[1] * (MOUTH_AT + 1.2), z: TOP, heading: BOWL_HEADING },
   -2 * BOWL_HEADING,
   BOWL_R,
-  { width: 2.6, rise: LOW - TOP, bank: 0.3, left: 'rail', right: 'board', stones: 5 },
+  { width: 2.6, rise: LOW - TOP, bank: 0.15, left: 'rail', right: 'board', stones: 5 },
 );
 b.at(bowlEnd.x, bowlEnd.y, bowlEnd.heading, LOW).width(2.6).straight(1.2, { width: MOUTH });
 

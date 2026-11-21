@@ -1,5 +1,5 @@
 import { BALL_R, MAX_PUTT, MIN_PUTT, SLOPE_ACCEL, STEP_UP } from './constants';
-import { Level, WALL_HALF, floorAt } from './level';
+import { Level, WALL_HALF, floorAt, hitTri } from './level';
 import { Ball, rollDistance } from './physics';
 
 // Bots follow the hole's route: the list of points its builder laid down from
@@ -20,7 +20,8 @@ function clearLine(L: Level, x0: number, y0: number, z0: number, x1: number, y1:
       const x = x0 + ox + ux * d;
       const y = y0 + oy + uy * d;
       const h = floorAt(L, x, y, prev + 0.2);
-      if (!Number.isFinite(h) || Math.abs(h - prev) > 0.3) return false;
+      // Water is ground as far as height goes, but nobody putts through a pond on purpose.
+      if (!Number.isFinite(h) || Math.abs(h - prev) > 0.3 || hitTri?.mat === 'water') return false;
       prev = h;
       const col = Math.floor(x - L.minX);
       const row = Math.floor(y - L.minY);
@@ -30,7 +31,7 @@ function clearLine(L: Level, x0: number, y0: number, z0: number, x1: number, y1:
         const ey = c.by - c.ay;
         const t = Math.max(0, Math.min(1, ((x - c.ax) * ex + (y - c.ay) * ey) / (ex * ex + ey * ey || 1)));
         const top = c.ta + (c.tb - c.ta) * t;
-        const reach = c.kind === 'cliff' ? 0.02 : WALL_HALF;
+        const reach = WALL_HALF;
         if (Math.hypot(x - c.ax - ex * t, y - c.ay - ey * t) > reach) continue;
         if (c.kind === 'cliff' ? h + STEP_UP < top : h < top && h > top - 1) return false;
       }

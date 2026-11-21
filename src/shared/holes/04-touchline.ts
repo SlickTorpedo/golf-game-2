@@ -3,8 +3,10 @@ import { ORANGE, PINK } from './palette';
 
 // Hole 4 is the first real choice: a big walled S, or the thin straight line
 // drawn through the middle of it.
-// Ace: along the line. A medium putt onto the running track is thrown across
-//   the S, down the kerbed second half and dies at the cup.
+// Ace: along the line. A soft putt that just reaches the running track (0.4
+//   to 0.5 power, within 2 degrees of the line) is thrown across the S, down
+//   the kerbed second half and dies at the cup. Any harder and the track sends
+//   it over the kerb behind the cup.
 // Safe: round the S, both loops walled and banked. Three or four putts.
 // Shortcut: the line. Its first half is bare running track with no edge at
 //   all, its second half has only kerbs, and the green behind the cup has a
@@ -59,7 +61,9 @@ b.at(GREEN_X, GREEN_Y, 0).cup();
 // The line. First half: a little turf, the running track, a little turf, no
 // edges. Second half: turf between kerbs.
 const HALF = (Math.hypot(GREEN_X, GREEN_Y) - LANE) / 2 - LINE_MOUTH;
-const TRACK = 2.55;
+// The track is short: any longer and even the softest putt that reaches it
+// comes off too fast to stop at the cup.
+const TRACK = 2.0;
 b.at(Math.cos(rad(LINE_HEADING)) * LINE_MOUTH, Math.sin(rad(LINE_HEADING)) * LINE_MOUTH, LINE_HEADING)
   .width(LINE)
   .walls('none')

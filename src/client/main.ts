@@ -5,10 +5,12 @@ import '@fontsource/barlow-condensed/800-italic.css';
 import './styles.css';
 
 import { createLocalPair } from '../net/channel';
+import { cleanCode, hostRoom, joinRoom, newCode } from '../net/peer';
 import { Room } from '../server/room';
-import { MAX_PUTT, MIN_PUTT, PENALTY_SCORE, STROKE_CAP, TICK_RATE } from '../shared/constants';
-import { STADIUM } from '../shared/courses';
+import { JITTER_SCALE, MAX_PUTT, MIN_PUTT, SWAY_ANGLE, SWAY_SECONDS, TICK_RATE, penaltyScore, strokeCap } from '../shared/constants';
+import { COURSES } from '../shared/courses';
 import { compileLevel, floorAt, hitTri } from '../shared/level';
+import type { Level } from '../shared/level';
 import { total } from '../shared/match';
 import { stepBall } from '../shared/physics';
 import type { ClientMsg, GameEvent, ItemKind, MatchState, PlayerState, ServerMsg } from '../shared/protocol';
@@ -27,6 +29,9 @@ const ITEM_TEXT: Record<ItemKind, [string, string]> = {
   sandal: ['Flip-flop', 'stops your rolling ball dead'],
   swap: ['Swap', 'trade places with the ball nearest the cup'],
   peanuts: ['Peanuts', 'take your last putt back'],
+  steady: ['Iced tea', 'no sway on your next two putts'],
+  magnet: ['Lucky scarf', 'the cup pulls this putt in'],
+  horn: ['Air horn', "everyone else's next aim goes wild"],
 };
 
 // ------------------------------------------------------------------ setup
@@ -60,12 +65,22 @@ await Promise.all([
   document.fonts.load('800 40px "Barlow Condensed"'),
 ]).catch(() => undefined);
 
-const room = new Room(STADIUM, (Math.random() * 2 ** 32) >>> 0);
+const room = new Room(COURSES, (Math.random() * 2 ** 32) >>> 0);
 const [clientEnd, serverEnd] = createLocalPair<ClientMsg, ServerMsg>(lag / 2);
 room.connect(serverEnd);
-const client = new GameClient(clientEnd, store.get('name') ?? '');
+let client = new GameClient(clientEnd, store.get('name') ?? '');
+/** solo: the room is in this tab and nobody else is in it. host: friends connect to this tab. guest: the room is in a friend's tab. */
+let online: 'solo' | 'host' | 'guest' = 'solo';
 
-const levels = STADIUM.map(compileLevel);
+// Courses are compiled the first time they are played.
+const compiled = new Map<string, Level[]>();
+let levels: Level[] = [];
+function useCourse(id: string): void {
+  const course = COURSES.find((c) => c.id === id) ?? COURSES[0];
+  if (!compiled.has(course.id)) compiled.set(course.id, course.holes.map(compileLevel));
+  levels = compiled.get(course.id)!;
+}
+useCourse(COURSES[0].id);
 const world = new World($<HTMLCanvasElement>('view'));
 world.setBackdrop(new Stadium(world.renderer));
 const sound = new Sound();
@@ -73,6 +88,7 @@ sound.setMusic(store.get('music') !== '0');
 sound.setSfx(store.get('sfx') !== '0');
 
 let shownHole = -1;
+let shownCourse = '';
 let framedHole = -1;
 let framedPlay = -1;
 let wasLobby = true;
@@ -103,21 +119,133 @@ function drawBots(): void {
 }
 drawBots();
 
+let courseId = COURSES.some((c) => c.id === store.get('course')) ? store.get('course')! : COURSES[0].id;
+const coursesEl = $('courses');
+for (const c of COURSES) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  const par = c.holes.reduce((n, h) => n + h.par, 0);
+  b.append(el('b', c.name), el('small', `${c.holes.length} holes · par ${par} · ${c.blurb}`));
+  b.onclick = () => {
+    courseId = c.id;
+    sound.ui('toggle');
+    drawCourses();
+  };
+  coursesEl.append(b);
+}
+function drawCourses(): void {
+  [...coursesEl.children].forEach((b, i) => b.setAttribute('aria-pressed', String(COURSES[i].id === courseId)));
+}
+drawCourses();
+
 const nameEl = $<HTMLInputElement>('name');
 nameEl.value = store.get('name') ?? '';
 nameEl.placeholder = 'Player';
 
 function kickOff(): void {
+  if (!client.host) return;
   sound.unlock();
   sound.ui('click');
   store.set('name', nameEl.value);
   store.set('bots', String(botCount));
-  client.send({ t: 'start', name: nameEl.value, bots: botCount });
+  store.set('course', courseId);
+  client.send({ t: 'start', name: nameEl.value, bots: botCount, course: courseId });
 }
 $('start').addEventListener('submit', (e) => {
   e.preventDefault();
   kickOff();
 });
+
+// ------------------------------------------------------------ with friends
+//
+// Host: this tab keeps running the room and friends' tabs connect to it.
+// Guest: this tab drops its own room and talks to the host's instead.
+
+const netNote = $('netNote');
+function say(text: string, code = ''): void {
+  netNote.hidden = false;
+  netNote.replaceChildren(text, ...(code ? [el('b', ` ${code}`)] : []));
+}
+
+async function host(): Promise<void> {
+  if (online !== 'solo') return;
+  sound.ui('click');
+  say('Opening a room…');
+  const code = newCode();
+  try {
+    await hostRoom(code, (ch) => room.connect(ch));
+  } catch (err) {
+    return say((err as Error).message);
+  }
+  online = 'host';
+  // A worker's timer keeps time even when this tab is in the background.
+  const ticker = new Worker(URL.createObjectURL(new Blob(['setInterval(() => postMessage(0), 16)'], { type: 'text/javascript' })));
+  let before = performance.now();
+  ticker.onmessage = () => {
+    const t = performance.now();
+    room.advance(t - before);
+    before = t;
+  };
+  const link = `${location.origin}${location.pathname}?join=${code}`;
+  say('Room open. Friends join with code', code);
+  const copy = el('button', 'Copy link');
+  copy.type = 'button';
+  copy.onclick = () => navigator.clipboard?.writeText(link).then(() => (copy.textContent = 'Copied'));
+  $('netBox').replaceChildren(copy);
+}
+
+async function join(raw: string): Promise<void> {
+  const code = cleanCode(raw);
+  if (online !== 'solo' || code.length < 5) return;
+  sound.unlock();
+  sound.ui('click');
+  store.set('name', nameEl.value);
+  say('Joining…');
+  let ch;
+  try {
+    ch = await joinRoom(code);
+  } catch (err) {
+    return say((err as Error).message);
+  }
+  online = 'guest';
+  client = new GameClient(ch, nameEl.value);
+  client.onEvents = onEvents;
+  client.onClosed = () => {
+    say('The host has left. Reload to play on your own.');
+    toast('Host has left', true);
+  };
+  shownHole = -1;
+  say('You are in room', code);
+  $('netBox').replaceChildren();
+  for (const id of ['fsCourse', 'fsBots']) $(id).hidden = true;
+  nameEl.disabled = true;
+}
+
+$('hostBtn').onclick = () => void host();
+$('joinBtn').onclick = () => void join($<HTMLInputElement>('joinCode').value);
+// A link from the host carries the code: fill it in so one press joins.
+if (params.get('join')) $<HTMLInputElement>('joinCode').value = cleanCode(params.get('join')!);
+
+/** Who is in the room, and what the big button does for you. */
+function drawLobby(s: MatchState): void {
+  once('roster', `${online}${s.players.map((p) => p.id + p.name).join('|')}`, () => {
+    const people = s.players.filter((p) => !p.bot);
+    $('roster').replaceChildren(
+      ...(online === 'solo'
+        ? []
+        : people.map((p) => {
+            const li = el('li', p.id === client.you ? `${p.name} (you)` : p.name);
+            li.style.setProperty('--c', css(PLAYER_COLORS[p.color]));
+            return li;
+          })),
+    );
+  });
+  once('kick', `${online}${client.host}`, () => {
+    const b = $<HTMLButtonElement>('kickBtn');
+    b.disabled = !client.host;
+    b.textContent = client.host ? 'Kick off' : 'Waiting for the host';
+  });
+}
 // Browsers only let sound start after a click or a key press.
 window.addEventListener('pointerdown', () => sound.unlock(), { capture: true });
 window.addEventListener('keydown', () => sound.unlock(), { capture: true });
@@ -130,7 +258,19 @@ window.addEventListener('keydown', () => sound.unlock(), { capture: true });
 
 const canvas = world.renderer.domElement;
 const pointers = new Map<number, { x: number; y: number }>();
-let aim: { id: number; sx: number; sy: number; dx: number; dy: number; power: number } | null = null;
+let aim: { id: number; sx: number; sy: number; dx: number; dy: number; power: number; t0: number } | null = null;
+
+/**
+ * Where the putt would go if released this instant. The aim swings slowly from side to
+ * side, so lining up is a matter of timing; iced tea stills it and an air horn widens it.
+ */
+function swayed(now: number): { dx: number; dy: number } {
+  if (!aim) return { dx: 0, dy: 0 };
+  const me = client.me;
+  const reach = me && me.steady > 0 ? 0 : SWAY_ANGLE * (me && me.jitters > 0 ? JITTER_SCALE : 1);
+  const a = reach * Math.sin(((now - aim.t0) / 1000 / SWAY_SECONDS) * Math.PI * 2);
+  return { dx: aim.dx * Math.cos(a) - aim.dy * Math.sin(a), dy: aim.dx * Math.sin(a) + aim.dy * Math.cos(a) };
+}
 let orbitId = -1;
 let pinch = 0;
 let lastOrbit = -1e9;
@@ -139,7 +279,8 @@ let wasMoving = false;
 function canPutt(): boolean {
   const s = client.state;
   const me = client.me;
-  return !!s && !!me && s.phase === 'playing' && !me.done && !me.moving && me.strokes < STROKE_CAP && performance.now() > lockUntil;
+  if (!s || !me || s.phase !== 'playing' || me.done || me.moving || performance.now() < lockUntil) return false;
+  return me.strokes < strokeCap(levels[s.hole].def.par);
 }
 
 canvas.addEventListener('pointerdown', (e) => {
@@ -157,7 +298,7 @@ canvas.addEventListener('pointerdown', (e) => {
   } else if (e.button === 2 || e.button === 1) {
     orbitId = e.pointerId;
   } else if (e.button === 0 && canPutt()) {
-    aim = { id: e.pointerId, sx: e.clientX, sy: e.clientY, dx: 0, dy: 0, power: 0 };
+    aim = { id: e.pointerId, sx: e.clientX, sy: e.clientY, dx: 0, dy: 0, power: 0, t0: performance.now() };
   }
 });
 
@@ -204,7 +345,8 @@ function release(e: PointerEvent, fire: boolean): void {
   if (e.pointerId === orbitId) orbitId = -1;
   if (!aim || aim.id !== e.pointerId) return;
   if (fire && aim.power > 0.04 && canPutt()) {
-    client.send({ t: 'putt', dx: aim.dx * aim.power, dy: aim.dy * aim.power });
+    const d = swayed(performance.now());
+    client.send({ t: 'putt', dx: d.dx * aim.power, dy: d.dy * aim.power });
     lockUntil = performance.now() + 300 + lag;
     hasPutted = true;
   }
@@ -286,7 +428,7 @@ function toast(text: string, bad = false): void {
 }
 
 /** What not holing out costs on a hole of this par. */
-const penalty = (par: number) => Math.min(PENALTY_SCORE, par + 4);
+const penalty = penaltyScore;
 
 function verdict(strokes: number, par: number): string {
   if (strokes === 1) return 'Hole in one';
@@ -294,7 +436,7 @@ function verdict(strokes: number, par: number): string {
   return d <= -2 ? 'Eagle' : d === -1 ? 'Birdie' : d === 0 ? 'Par' : d === 1 ? 'Bogey' : `In for ${strokes}`;
 }
 
-client.onEvents = (events: GameEvent[], s: MatchState) => {
+const onEvents = (events: GameEvent[], s: MatchState): void => {
   const L = levels[s.hole];
   const now = performance.now();
   for (const e of events) {
@@ -360,7 +502,9 @@ client.onEvents = (events: GameEvent[], s: MatchState) => {
       if (mine) sound.pickup();
       world.sparkleFx(at.x, at.y, at.z, ITEM_COLORS[e.kind]);
     } else if (e.t === 'item') {
-      sound.item(e.kind, mine ? 1 : 0.7);
+      // The newer leftovers borrow the nearest existing sound until they get their own.
+      if (e.kind === 'horn') sound.whistle('end');
+      sound.item(e.kind === 'horn' ? 'sandal' : e.kind === 'steady' ? 'peanuts' : e.kind === 'magnet' ? 'swap' : e.kind, mine ? 1 : 0.7);
       const floor = at.z;
       world.pulse(e.x, e.y, floor, ITEM_COLORS[e.kind], e.kind === 'drum' ? 3.4 : 1.2);
       world.sparkleFx(e.x, e.y, floor, ITEM_COLORS[e.kind], e.kind === 'drum' ? 60 : 24);
@@ -369,6 +513,7 @@ client.onEvents = (events: GameEvent[], s: MatchState) => {
     }
   }
 };
+client.onEvents = onEvents;
 
 // -------------------------------------------------------------------- HUD
 
@@ -466,7 +611,7 @@ function drawCard(s: MatchState): void {
   const me = client.me;
 
   once('cardBtn', `${s.phase}${secs}${me?.ready}`, () => {
-    $('cardBtn').textContent = final ? 'Play again' : me?.ready ? `Waiting ${secs}` : `Next hole ${secs}`;
+    $('cardBtn').textContent = final ? (client.host ? 'Play again' : 'Waiting for the host') : me?.ready ? `Waiting ${secs}` : `Next hole ${secs}`;
   });
 
   once('card', `${s.phase}${s.hole}${rows.map((p) => p.id + p.scores.join()).join('|')}`, () => {
@@ -562,7 +707,7 @@ function drawTags(s: MatchState, now: number, show: boolean): void {
 function previewPath(s: MatchState, me: PlayerState, dx: number, dy: number, power: number) {
   const L = levels[s.hole];
   const speed = MIN_PUTT + (MAX_PUTT - MIN_PUTT) * power;
-  const b = { ...me.ball, vx: dx * speed, vy: dy * speed, vz: 0 };
+  const b = { ...me.ball, vx: dx * speed, vy: dy * speed, vz: 0, wx: 0, wy: 0 };
   const path = [{ x: b.x, y: b.y, z: b.z }];
   const ticks = Math.round(8 + power * 26);
   for (let i = 0; i < ticks; i++) {
@@ -584,13 +729,18 @@ function frame(now: number): void {
   last = now;
 
   // This tab is also the host, so it drives the room's clock.
-  room.advance(dt * 1000);
+  // (When friends are connected a background timer does it instead, so the game does not
+  // stall for everyone when the host looks at another tab.)
+  if (online === 'solo') room.advance(dt * 1000);
 
   const s = client.state;
   if (!s) return world.render(dt, 0, false);
 
-  if (s.hole !== shownHole) {
+  if (s.hole !== shownHole || s.course !== shownCourse) {
     shownHole = s.hole;
+    shownCourse = s.course;
+    useCourse(s.course);
+    framedHole = -1;
     world.setLevel(levels[s.hole]);
   }
   const L = levels[s.hole];
@@ -606,7 +756,8 @@ function frame(now: number): void {
   $('title').hidden = !lobby;
   $('hud').hidden = lobby;
   $('card').hidden = s.phase !== 'holeEnd' && s.phase !== 'final';
-  if (!lobby) drawHud(s, me);
+  if (lobby) drawLobby(s);
+  else drawHud(s, me);
   if (!$('card').hidden) drawCard(s);
 
   const next: Scene =
@@ -653,8 +804,12 @@ function frame(now: number): void {
   const ready = canPutt() && !!mine;
   if (!ready) aim = null;
   world.setMarker(ready && !aim && mine ? mine : null);
-  if (aim && me && aim.power > 0.04) world.setAim(previewPath(s, me, aim.dx, aim.dy, aim.power), aim.power);
+  if (aim && me && aim.power > 0.04) {
+    const d = swayed(now);
+    world.setAim(previewPath(s, me, d.dx, d.dy, aim.power), aim.power);
+  }
   else world.setAim(null);
+  $('powerNote').textContent = me && me.steady > 0 ? 'power · steady' : me && me.jitters > 0 ? 'power · rattled' : 'power';
   sound.aim(aim ? aim.power : null);
 
   // ---- the sound of your own ball rolling
@@ -675,4 +830,16 @@ function frame(now: number): void {
 requestAnimationFrame(frame);
 
 // ?debug puts the room and client on window for poking at from the console.
-if (params.has('debug')) Object.assign(window, { game: { room, client, world, sound } });
+if (params.has('debug')) {
+  Object.assign(window, {
+    game: {
+      room,
+      world,
+      sound,
+      // The client changes when you join someone else's room.
+      get client() {
+        return client;
+      },
+    },
+  });
+}

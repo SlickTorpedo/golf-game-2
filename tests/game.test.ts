@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { createLocalPair } from '../src/net/channel';
 import { Room } from '../src/server/room';
 import { HoleBuilder } from '../src/shared/builder';
-import { PENALTY_SCORE, PROTOCOL_VERSION } from '../src/shared/constants';
-import { STADIUM } from '../src/shared/courses';
+import { PROTOCOL_VERSION, penaltyScore } from '../src/shared/constants';
+import { ALL_HOLES, COURSES } from '../src/shared/courses';
+
+const STADIUM = COURSES[0].holes;
 import { compileLevel, floorAt } from '../src/shared/level';
 import { Match } from '../src/shared/match';
 import { stepBall } from '../src/shared/physics';
@@ -19,7 +21,7 @@ function playRound(seed: number, holes = STADIUM): Match {
 // Every hole in the round has to hold together and be finishable.
 // Run one hole with:  npx vitest run --disable-console-intercept -t "hole <id>:"
 describe('holes', () => {
-  for (const def of STADIUM) {
+  for (const def of ALL_HOLES) {
     it(`hole ${def.id}: builds, and everything stands on the ground`, () => {
       const L = compileLevel(def);
       expect(def.par).toBeGreaterThanOrEqual(2);
@@ -40,7 +42,7 @@ describe('holes', () => {
         const m = playRound(seed, [def]);
         scores.push(...m.state.players.map((p) => p.scores[0]));
       }
-      const holed = scores.filter((s) => s < Math.min(PENALTY_SCORE, def.par + 4));
+      const holed = scores.filter((s) => s < penaltyScore(def.par));
       const avg = holed.reduce((a, b) => a + b, 0) / Math.max(1, holed.length);
       console.log(`${def.id}: par ${def.par}, bots holed ${holed.length}/12, average ${avg.toFixed(1)}, scores ${scores.join(' ')}`);
       expect(holed.length, 'at least half the bots must hole out').toBeGreaterThanOrEqual(6);
@@ -67,14 +69,14 @@ describe('match', () => {
 
 describe('room', () => {
   it('serves a client over a channel', async () => {
-    const room = new Room(STADIUM, 3);
+    const room = new Room(COURSES, 3);
     const [client, server] = createLocalPair<ClientMsg, ServerMsg>();
     const got: ServerMsg[] = [];
     client.onMessage((m) => got.push(m));
     room.connect(server);
     client.send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Test' });
     await Promise.resolve();
-    client.send({ t: 'start', name: 'Test', bots: 2 });
+    client.send({ t: 'start', name: 'Test', bots: 2, course: COURSES[0].id });
     await Promise.resolve();
     for (let i = 0; i < 10; i++) room.tick();
     await new Promise((r) => setTimeout(r, 0));
@@ -93,7 +95,7 @@ describe('physics', () => {
     return compileLevel(b.build());
   };
   const roll = (L: ReturnType<typeof lane>, vx: number, vy = 0, max = 900) => {
-    const b = { x: L.tee.x, y: L.tee.y, z: L.tee.z, vx, vy, vz: 0 };
+    const b = { x: L.tee.x, y: L.tee.y, z: L.tee.z, vx, vy, vz: 0, wx: 0, wy: 0 };
     const seen = { holed: false, oob: false, splash: false, tunnel: false, cone: false, hop: false, air: false, spring: false };
     for (let i = 0; i < max; i++) {
       const r = stepBall(L, b, i);
@@ -111,8 +113,9 @@ describe('physics', () => {
   };
 
   it('a gentle putt drops, a hard one runs over the cup', () => {
-    const L = lane((b) => b.straight(8).cup(-4).cap());
-    expect(roll(L, 6.5).seen.holed).toBe(true);
+    // No wall at the far end: a ball that runs over the cup carries on off the edge.
+    const L = lane((b) => b.straight(8).cup(-4));
+    expect(roll(L, 5).seen.holed).toBe(true);
     expect(roll(L, 12).seen.holed).toBe(false);
   });
 

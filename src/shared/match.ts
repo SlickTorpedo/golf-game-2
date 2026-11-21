@@ -3,18 +3,21 @@ import {
   DRUM_PUSH,
   DRUM_RADIUS,
   HOLE_END_SECONDS,
-  HOLE_SECONDS,
+  JITTER_SCALE,
   LAST_PLAYER_SECONDS,
   INTRO_SECONDS,
   MAX_ITEMS,
   MAX_PLAYERS,
   MAX_PUTT,
   MIN_PUTT,
-  PENALTY_SCORE,
   PICKUP_R,
   PICKUP_RESPAWN_SECONDS,
-  STROKE_CAP,
+  STEADY_PUTTS,
+  SWAY_ANGLE,
   TICK_RATE,
+  holeSeconds,
+  penaltyScore,
+  strokeCap,
 } from './constants';
 import { HoleDef, Level, compileLevel, floorAt } from './level';
 import { isMoving, nearSpinner, stepBall } from './physics';
@@ -30,14 +33,15 @@ const BOT_NAMES = ['Pak Slamet', 'Mbak Rini', 'Dimas', 'Bu Yanti', 'Mas Agus', '
  */
 export class Match {
   readonly state: MatchState;
-  readonly levels: Level[];
+  levels: Level[];
   private events: GameEvent[] = [];
   private nextColor = 0;
 
-  constructor(holes: HoleDef[], seed: number) {
+  constructor(holes: HoleDef[], seed: number, course = '') {
     this.levels = holes.map(compileLevel);
     this.state = {
       phase: 'lobby',
+      course,
       hole: 0,
       holeCount: holes.length,
       tick: 0,
@@ -46,6 +50,22 @@ export class Match {
       pickups: [],
       rng: seed >>> 0 || 1,
     };
+  }
+
+  /** Swap in another course. Only between rounds. */
+  load(holes: HoleDef[], course: string): void {
+    const s = this.state;
+    if (s.phase !== 'lobby' && s.phase !== 'final') return;
+    this.levels = holes.map(compileLevel);
+    s.course = course;
+    s.holeCount = holes.length;
+    s.hole = 0;
+    for (const p of s.players) this.placeOnTee(p);
+  }
+
+  /** Par of the hole being played. */
+  private get par(): number {
+    return this.level.def.par;
   }
 
   get level(): Level {
@@ -63,7 +83,7 @@ export class Match {
       name: cleanName(name),
       color: this.nextColor++ % MAX_PLAYERS,
       bot,
-      ball: { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0 },
+      ball: { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, wx: 0, wy: 0 },
       moving: false,
       restX: 0,
       restY: 0,
@@ -75,12 +95,16 @@ export class Match {
       scores: [],
       items: [],
       stats: { falls: 0, hits: 0, items: 0, aces: 0, air: 0 },
+      park: [0, 0, 0],
+      steady: 0,
+      jitters: 0,
+      magnet: false,
       wait: 0,
     };
     this.state.players.push(p);
     this.placeOnTee(p);
     // Someone who walks in mid-match takes the penalty score for holes already played.
-    for (let i = 0; i < this.playedHoles(); i++) p.scores.push(PENALTY_SCORE);
+    for (let i = 0; i < this.playedHoles(); i++) p.scores.push(penaltyScore(this.levels[i].def.par));
     return p;
   }
 
@@ -118,7 +142,7 @@ export class Match {
     s.tick++;
 
     if (s.phase === 'intro') {
-      if (--s.timer <= 0) this.setPhase('playing', HOLE_SECONDS);
+      if (--s.timer <= 0) this.setPhase('playing', holeSeconds(this.par));
     } else if (s.phase === 'playing') {
       this.stepPlaying();
     } else if (s.phase === 'holeEnd') {
@@ -148,7 +172,7 @@ export class Match {
       if (p.moving || nearSpinner(L, p.ball)) {
         const b = p.ball;
         const from = { x: b.x, y: b.y };
-        const r = stepBall(L, b, s.tick);
+        const r = stepBall(L, b, s.tick, p.magnet);
         if (r.oob) {
           this.events.push({ t: 'out', p: p.id, x: b.x, y: b.y, z: b.z, water: r.splash });
           p.strokes++;
@@ -172,8 +196,19 @@ export class Match {
           if (r.hop) this.events.push({ t: 'hop', p: p.id });
           if (r.spring) this.events.push({ t: 'spring', p: p.id, x: from.x, y: from.y });
           p.moving = isMoving(L, b);
+          // A ball that is still "moving" but has not left one spot for five seconds is put at
+          // rest there, so nothing can lock a player out of their next putt.
+          if (Math.hypot(b.x - p.park[0], b.y - p.park[1]) > 0.35) p.park = [b.x, b.y, 0];
+          else if (p.moving && ++p.park[2] > TICK_RATE * 5 && r.surface !== 'air') {
+            b.vx = b.vy = b.vz = b.wx = b.wy = 0;
+            p.moving = false;
+          }
+          if (!p.moving) {
+            p.park[2] = 0;
+            p.magnet = false;
+          }
         }
-        if (!p.moving && p.strokes >= STROKE_CAP) {
+        if (!p.moving && p.strokes >= strokeCap(this.par)) {
           this.finish(p, false);
           continue;
         }
@@ -199,7 +234,7 @@ export class Match {
   }
 
   private putt(p: PlayerState, dx: number, dy: number): void {
-    if (this.state.phase !== 'playing' || p.done || p.moving || p.strokes >= STROKE_CAP) return;
+    if (this.state.phase !== 'playing' || p.done || p.moving || p.strokes >= strokeCap(this.par)) return;
     if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
     const len = Math.hypot(dx, dy);
     if (len < 1e-4) return;
@@ -212,12 +247,14 @@ export class Match {
     p.ball.vy = (dy / len) * speed;
     p.moving = true;
     p.strokes++;
+    if (p.steady > 0) p.steady--;
+    if (p.jitters > 0) p.jitters--;
     this.events.push({ t: 'putt', p: p.id, power });
   }
 
   /** The way out of any spot a ball cannot be putted from. */
   private reset(p: PlayerState): void {
-    if (this.state.phase !== 'playing' || p.done || p.strokes < 1 || p.strokes >= STROKE_CAP) return;
+    if (this.state.phase !== 'playing' || p.done || p.strokes < 1 || p.strokes >= strokeCap(this.par)) return;
     this.events.push({ t: 'out', p: p.id, x: p.ball.x, y: p.ball.y, z: p.ball.z, water: false });
     p.strokes++;
     this.placeAt(p, p.restX, p.restY, p.restZ);
@@ -267,6 +304,17 @@ export class Match {
       if (p.strokes < 1) return;
       p.strokes--;
       this.placeAt(p, p.restX, p.restY, p.restZ);
+    } else if (kind === 'steady') {
+      // Iced tea: a steady hand for the next couple of putts.
+      p.steady = STEADY_PUTTS;
+      p.jitters = 0;
+    } else if (kind === 'magnet') {
+      // Lucky scarf: the cup draws this ball in until it next stops.
+      p.magnet = true;
+    } else if (kind === 'horn') {
+      // Air horn: everyone else's next putt sways wildly.
+      if (!others.length) return;
+      for (const o of others) if (o.steady === 0) o.jitters = 1;
     }
 
     p.items.splice(slot, 1);
@@ -291,11 +339,14 @@ export class Match {
     if (--p.wait > 0) return;
     p.wait = Math.floor(TICK_RATE * (1.4 + this.rand() * 2));
     // Bots only bother with the leftovers that need no timing.
-    const slot = p.items.findIndex((k) => k === 'drum' || k === 'swap');
+    const useful = (k: ItemKind) => k === 'drum' || k === 'swap' || k === 'horn' || k === 'magnet';
+    const slot = p.items.findIndex(useful);
     if (slot !== -1 && this.rand() < 0.5) this.useItem(p, slot);
-    p.items = p.items.filter((k) => k === 'drum' || k === 'swap');
+    p.items = p.items.filter(useful);
     const shot = planPutt(this.level, p.ball, () => this.rand());
-    this.putt(p, shot.dx, shot.dy);
+    // A bot that has had the horn sounded at it is thrown off line like anyone else.
+    const off = p.jitters > 0 ? (this.rand() - 0.5) * 2 * SWAY_ANGLE * JITTER_SCALE : 0;
+    this.putt(p, shot.dx * Math.cos(off) - shot.dy * Math.sin(off), shot.dx * Math.sin(off) + shot.dy * Math.cos(off));
   }
 
   // -------------------------------------------------------------- helpers
@@ -310,6 +361,9 @@ export class Match {
       p.holed = false;
       p.done = false;
       p.ready = false;
+      p.steady = 0;
+      p.jitters = 0;
+      p.magnet = false;
       p.wait = Math.floor(TICK_RATE * (2 + this.rand() * 3));
       this.placeOnTee(p);
     }
@@ -326,8 +380,8 @@ export class Match {
     p.done = true;
     p.holed = holed;
     p.moving = false;
-    p.ball.vx = p.ball.vy = p.ball.vz = 0;
-    p.scores[this.state.hole] = holed ? p.strokes : Math.min(PENALTY_SCORE, this.level.def.par + 4);
+    p.ball.vx = p.ball.vy = p.ball.vz = p.ball.wx = p.ball.wy = 0;
+    p.scores[this.state.hole] = holed ? p.strokes : penaltyScore(this.par);
   }
 
   private placeOnTee(p: PlayerState): void {
@@ -341,7 +395,7 @@ export class Match {
   /** Put a ball down at rest on the ground at, or just under, this height. */
   private placeAt(p: PlayerState, x: number, y: number, z: number): void {
     const floor = floorAt(this.level, x, y, z + 0.1);
-    p.ball = { x, y, z: Number.isFinite(floor) ? floor : z, vx: 0, vy: 0, vz: 0 };
+    p.ball = { x, y, z: Number.isFinite(floor) ? floor : z, vx: 0, vy: 0, vz: 0, wx: 0, wy: 0 };
     p.moving = false;
   }
 

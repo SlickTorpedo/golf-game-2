@@ -71,7 +71,8 @@ gained; negative goes down), `mat` (`'turf'`, `'mud'`, `'ice'`, `'water'`),
 `boost: true` (running track that pushes the ball forward; straights only),
 `left` / `right` (wall for this piece only), `bridge: true` (air underneath:
 balls on a lower level can pass under), `bank` (turns only: lifts the outside
-edge by this much mid-bend).
+edge by this much mid-bend, fading in and out), `tilt` (turns only: lifts the
+outside edge for the whole bend, like a velodrome).
 
 ### Things placed at the pen
 
@@ -85,9 +86,9 @@ arms reach 1.3, keep 1.8 clear of walls), `spring()` (throws the ball up),
 | Call | What it does |
 |---|---|
 | `poly(points, z, { mat, walls, bridge })` | A polygon of ground. `z` is one height or one per point. `walls` is one kind, or one per edge. |
-| `disc(x, y, r, z, { mat, wall, gaps })` | A round patch. `gaps` are rim stretches with no wall, as `[fromDeg, toDeg]` pairs using heading angles. |
+| `disc(x, y, r, z, { mat, wall, gaps, mouths })` | A round patch. `gaps` are rim stretches with no wall, as `[fromDeg, toDeg]` pairs using heading angles. `mouths` are openings for lanes, as `[headingFromCentre, laneWidth]` pairs. |
 | `mound(x, y, r, height)` | A smooth hump on ground already laid. 0.05–0.15 bends a putt; 0.3+ is a hill. |
-| `wall(points, kind)` | A free-standing wall through these points. |
+| `wall(points, kind, z?)` | A free-standing wall through these points, on the highest ground under each. Give `z` to stand it at one height (for a wall under an overhang). |
 | `way(x, y, z?, power?)` | An extra route point for the bots. |
 
 Pieces may overlap or butt against each other freely. Where two pieces meet at
@@ -98,7 +99,9 @@ that stretch (`left: 'none'`).
 
 Use these when sizing things. They come from `src/shared/constants.ts`.
 
-- **Reach.** A full-power putt rolls about 12 units on flat turf; half power about 4.5.
+- **Reach.** A struck ball skids for the first sixth of its trip, then rolls out slowly.
+  On flat turf: quarter power 1.7 units, half 5, three-quarter 10.5, full 17.5.
+  A full-power putt takes about four seconds to stop.
 - **Walls.** `kerb` (0.11 high): a ball arriving faster than 3.6 units/s
   straight into it hops over. `rail` (0.3): only above 9.5, a near full-power
   direct hit. `board` (0.62): never. Glancing hits count only the speed *into*
@@ -107,16 +110,18 @@ Use these when sizing things. They come from `src/shared/constants.ts`.
   where it was hit from.
 - **Higher ground is a wall** from below. From above, the ball simply drops,
   and bounces a little when it lands.
-- **Slopes.** A resting ball stays put on anything gentler than about 1 in 5
-  (rise 0.2 per unit). Steeper and it rolls back. Climbing 0.5 costs a ball
-  about 4 units/s of speed; it needs roughly a 45% putt to get up a 0.5 ramp
-  that starts 3 units away.
+- **Slopes.** A resting ball stays put only on ground gentler than about 1 in 6
+  (rise 0.16 per unit). Steeper and it rolls back down, and keeps rolling: a
+  ball runs a long way on the flat now, so every slope needs somewhere for the
+  ball to end up. Climbing 0.5 costs a ball about 3.5 units/s of speed.
 - **Ramps throw.** A ball leaving the top of a rising ramp keeps its upward
   speed and flies. Leaving a ramp of rise 0.6 over 2 units at 9 units/s
   carries about 1.8 units before coming back to launch height, further if the
-  landing is lower. Slow balls barely leave the ground.
+  landing is lower. Slow balls barely leave the ground. Top putt speed is
+  10.5 units/s, so big jumps need running track or a downhill run-up.
+  Measure a jump with `stepBall` before trusting it.
 - **Running track** (`boost`) adds a lot: three units of it takes a ball from
-  rest to full speed. Put a wall, an up-slope or a long run-out after it.
+  rest to about 10 units/s. Put a wall, an up-slope or a long run-out after it.
 - **Spring** throws the ball up for about 0.6 s; it travels its ground speed
   times that (2–5 units).
 - **Cup.** Drops if the ball is slower than 5.5 units/s over it; faster lips
@@ -166,7 +171,7 @@ Shape
 - [ ] Open edges are deliberate. Beside the safe line use a kerb or rail; beside the shortcut, nothing or a kerb.
 - [ ] Drops land somewhere that keeps the ball in play: a wide flat with a backstop.
 - [ ] The cup is on flat ground at least 1.2 across, 0.8 or more from any edge.
-- [ ] Safe-line length: 10–18 units for par 2, 18–30 for par 3, 30–45 for par 4.
+- [ ] Safe-line length: 10–18 units for par 2, 18–30 for par 3, 30–45 for par 4, and about 14–16 units per stroke of par on big holes.
 - [ ] Use `board` walls where a long stretch faces the player: they carry the adverts and nothing gets over them.
 
 Recovery
@@ -181,3 +186,30 @@ Everyone at once
 
 Sign-off: describe the hole's idea in one line at the top of the file, in the
 file's first comment.
+
+## Big holes
+
+The Cup Run course is made of big holes: par 5 to 7, built from three or four
+sections, each with its own idea. `docs/cup-run.md` has the plan for each.
+What changes at this size:
+
+- **Sections.** Each section is a small hole in itself with one idea. Join
+  them with a landing: flat ground at least 3 x 3 where a ball can stop and the
+  player can read what comes next.
+- **Routes.** At least two ways through the hole as a whole, and one big
+  shortcut that skips a whole section at real risk. Strategy comes from
+  choosing, so make the choice visible from where it is made.
+- **Failing soft.** On a long hole, losing the ball to the void near the end
+  is cheap (back to where you hit from), but a hole with void everywhere is
+  tiring. Prefer drops that land the ball on an earlier part of the hole: the
+  cost is distance, and it is funnier.
+- **Landmarks.** Give each section something to recognise it by (a spiral, a
+  bridge, a row of cones, a colour of board), and put the green where it can
+  be seen from the tee if you can: high up, or at the end of a long view.
+- **Pickups.** Three to five, spread over the sections, at least one on the
+  shortcut.
+- **Limits.** The clock is 45 s plus 25 s per stroke of par, and the stroke
+  cap is twice par plus two. Bots should average within about 3 of par.
+- **Size.** Up to about 55 x 55 units and heights 0 to 5. Keep the file
+  readable: name each section with a comment, and use `mark`/`goto` and small
+  local helper functions rather than one endless chain.

@@ -7,18 +7,23 @@ import { PINK, VIOLET } from './palette';
 //
 // Safe line: lay up short of the gate, wait for the arms to swing clear and
 //   putt between the hubs; then round the banked bend down to the round green.
-// Ace line: the pier by the tee. Cross the spring pad at about two-thirds
-//   power and the ball flies the gap and runs out to the flag.
-// Shortcut: the same pier. It has no walls, the pad is small, and a soft jump
-//   falls short. The gate has its own price: its pads are open round the
-//   outside, and an arm that catches the ball bats it back hard, sometimes
-//   off the side.
+//   A firm putt dead between the hubs gets through whenever it is played; one
+//   or two degrees off line, about half get batted back unless timed.
+// Ace line: the pier by the tee. Cross the spring pad at three-quarter power
+//   or more (aimed within two degrees of the pad) and the ball flies the gap
+//   and runs out to the flag.
+// Shortcut: the same pier. It has no walls, the pad is small, and a jump
+//   softer than three-quarter power falls short. The gate has its own price:
+//   its pads are open round the outside, and an arm that catches the ball
+//   bats it back hard, sometimes off the side.
 const b = new HoleBuilder({ id: 'turnstile', name: 'Turnstile', par: 3, boards: [PINK, VIOLET] });
 
 const TOP = 1;
 const LANE = 2.6;
 const GATE_X = 5.6;
-const HUB = 1.5;
+// The hubs stand just far enough apart that the arm tips leave a ball's width
+// clear on the centre line.
+const HUB = 1.55;
 const PAD = 1.85;
 // Where the lane's edges meet the round pads.
 const MOUTH = Math.sqrt(PAD ** 2 - (HUB - LANE / 2) ** 2);
@@ -49,12 +54,13 @@ b.at(-1.2, 0, 0, TOP)
   // The two hubs turn opposite ways, so both sweep back toward the tee through the middle.
   .spinner(-MOUTH, -HUB, 1)
   .spinner(-MOUTH, HUB, -1)
-  .way(GATE_X + 2.6, 0, TOP, 0.85)
+  .way(GATE_X + 2.6, 0, TOP, 1)
   // The reward for getting through: a strip of track that slings the ball into the bend.
   .straight(BEND_X - GATE_X - MOUTH, { boost: true })
   // The bend home: a banked half-circle that drops one level, then the run in.
+  // The bank is gentle enough that a ball running out of pace on it settles.
   .route(true)
-  .turn(180, BEND_R, { rise: -TOP, bank: 0.3, left: 'board' })
+  .turn(180, BEND_R, { rise: -TOP, bank: 0.2, left: 'board' })
   .straight(BEND_X - GREEN.x - Math.sqrt(GREEN.r ** 2 - (LANE / 2) ** 2))
   .item(-2);
 

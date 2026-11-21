@@ -18,6 +18,59 @@ export interface CourseTextures {
 }
 
 const DECK = 0.35;
+
+/**
+ * The see-through window round your ball. Anything standing between the camera and the
+ * ball is thinned to a fine screen of dots inside a cone round the line of sight, so a
+ * wall or an upper level never hides the ball. World sets these every frame.
+ */
+export const CUT = {
+  /** Centre of the ball, scene coordinates. */
+  ball: { value: new THREE.Vector3() },
+  /** 1 while there is a ball to keep in view, else 0. */
+  on: { value: 0 },
+  /** Radius of the window at the ball, in world units. */
+  radius: { value: 1.05 },
+};
+
+/** Teach a material to open the window. Works on any of three.js's built-in materials. */
+function cutaway<T extends THREE.Material>(mat: T): T {
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uCutBall = CUT.ball;
+    shader.uniforms.uCutOn = CUT.on;
+    shader.uniforms.uCutRadius = CUT.radius;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vCutWorld;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvCutWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        '#include <common>\nvarying vec3 vCutWorld;\nuniform vec3 uCutBall;\nuniform float uCutOn;\nuniform float uCutRadius;',
+      )
+      .replace(
+        '#include <clipping_planes_fragment>',
+        [
+          '#include <clipping_planes_fragment>',
+          'if (uCutOn > 0.5) {',
+          '  vec3 toBall = uCutBall - cameraPosition;',
+          '  float reach = length(toBall);',
+          '  vec3 sight = toBall / reach;',
+          '  vec3 toHere = vCutWorld - cameraPosition;',
+          '  float along = dot(toHere, sight);',
+          // Only things nearer than the ball, and standing above the ground it is on.
+          '  if (along > 0.0 && along < reach - 0.3 && vCutWorld.y > uCutBall.y - 0.1) {',
+          '    float off = length(toHere - sight * along);',
+          '    float r = uCutRadius * along / reach;',
+          '    float keep = mix(0.16, 1.0, smoothstep(r * 0.55, r, off));',
+          '    float dots = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));',
+          '    if (keep < dots) discard;',
+          '  }',
+          '}',
+        ].join('\n'),
+      );
+  };
+  return mat;
+}
 /** One ad panel is this long on a board. */
 const AD_LEN = 2.4;
 
@@ -93,6 +146,7 @@ export class Course {
     if (!m) return null;
     m.castShadow = cast;
     m.receiveShadow = receive;
+    cutaway(m.material as THREE.Material);
     this.group.add(m);
     return m;
   }
@@ -126,8 +180,9 @@ export class Course {
       else if (t.mat === 'water') water.tri(v, world(0.5));
       else if (t.mat === 'track') {
         track.tri(v, world(1));
-        const [px, py] = t.push ?? [1, 0];
-        chevrons.tri(
+        // Track with no push is just a red surface: no arrows.
+        const [px, py] = t.push ?? [0, 0];
+        if (t.push) chevrons.tri(
           v.map((q): V => [q[0], q[1] + 0.006, q[2]]),
           o.map((q) => [q[0] * px + q[1] * py, q[0] * -py + q[1] * px]),
         );

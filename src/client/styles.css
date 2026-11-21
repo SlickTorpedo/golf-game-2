@@ -415,7 +415,7 @@ button {
 }
 
 #start .gloss {
-  margin: 0 0 26px;
+  margin: 0 0 14px;
   font-size: 17px;
   font-weight: 500;
 }
@@ -446,9 +446,106 @@ button {
 }
 
 #start fieldset {
-  margin: 0 0 22px;
+  margin: 0 0 14px;
   padding: 0;
   border: 0;
+}
+
+#courses {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+#courses button {
+  padding: 6px 10px 8px;
+  border: 3px solid var(--ink);
+  background: transparent;
+  text-align: left;
+  line-height: 1.1;
+}
+
+#courses button b {
+  display: block;
+  font-size: 22px;
+  font-weight: 800;
+  font-style: italic;
+  text-transform: uppercase;
+}
+
+#courses button small {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+#courses button[aria-pressed='true'] {
+  background: var(--ink);
+  color: var(--lime);
+}
+
+#netBox {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+#netBox button {
+  padding: 6px 12px;
+  border: 3px solid var(--ink);
+  background: transparent;
+  font-size: 19px;
+  font-weight: 800;
+}
+
+#netBox button:hover {
+  background: var(--ink);
+  color: var(--lime);
+}
+
+#joinRow {
+  display: flex;
+}
+
+#start #joinCode {
+  width: 96px;
+  margin: 0;
+  border-right: 0;
+  font-size: 19px;
+  text-transform: uppercase;
+}
+
+#netNote {
+  margin: 6px 0 0;
+  font-size: 17px;
+  user-select: text;
+}
+
+#netNote b {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+#roster {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+#roster li {
+  padding-left: 7px;
+  border-left: 6px solid var(--c);
+}
+
+#kickBtn:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 #bots {

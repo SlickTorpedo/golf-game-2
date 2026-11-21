@@ -9,15 +9,17 @@ import {
   CUP_PULL,
   CUP_R,
   CUP_SLOPE,
-  DRAG,
   FLOOR_BOUNCE,
   GRAVITY,
+  BOUNCE_SPIN,
   ICE_DECEL,
+  ICE_SLIDE,
   KILL_DROP,
   MAX_SPEED,
   MUD_DECEL,
   RESTITUTION,
   ROLL_DECEL,
+  SLIDE_DECEL,
   SLOPE_ACCEL,
   SPIN_RATE,
   SPRING_R,
@@ -38,6 +40,9 @@ export interface Ball {
   vx: number;
   vy: number;
   vz: number;
+  /** Spin, as the speed of the ball's surface along the ground. Equal to vx, vy when it is rolling cleanly. */
+  wx: number;
+  wy: number;
 }
 
 export type HitMaterial = 'board' | 'concrete' | 'cone' | 'turnstile';
@@ -97,7 +102,8 @@ export function nearSpinner(L: Level, b: Ball): boolean {
 }
 
 /** Advance one ball by one tick. Mutates the ball. */
-export function stepBall(L: Level, b: Ball, tick: number): StepResult {
+/** magnet: the cup reaches further and holds faster balls, for a ball under the lucky scarf. */
+export function stepBall(L: Level, b: Ball, tick: number, magnet = false): StepResult {
   const res: StepResult = {
     oob: false,
     splash: false,
@@ -141,35 +147,62 @@ export function stepBall(L: Level, b: Ball, tick: number): StepResult {
       const cx = L.cup.x - b.x;
       const cy = L.cup.y - b.y;
       const cd = Math.hypot(cx, cy);
-      if (cd < CUP_R * 1.7 && Math.abs(floor - L.cup.z) < 0.08) {
+      if (cd < CUP_R * (magnet ? 5 : 1.7) && Math.abs(floor - L.cup.z) < 0.08) {
         const sp = Math.hypot(b.vx, b.vy);
-        if (cd < CUP_R && sp < CUP_MAX_SPEED) {
+        if (cd < CUP_R && sp < CUP_MAX_SPEED * (magnet ? 1.5 : 1)) {
           res.holed = true;
           return res;
         }
         if (cd > 1e-4) {
-          const pull = cd < CUP_R ? CUP_PULL : CUP_SLOPE;
+          const pull = cd < CUP_R ? CUP_PULL : CUP_SLOPE * (magnet ? 5 : 1);
           ax += (cx / cd) * pull;
           ay += (cy / cd) * pull;
         }
       }
 
-      const sp = Math.hypot(b.vx, b.vy);
+      // Friction. The ground drags on the bottom of the ball. While the ball is sliding (just
+      // struck, just bounced) that drag is strong: it slows the ball and spins it up. Once the
+      // spin has caught up the ball is rolling, and rolling costs very little.
       const grip = tri.mat === 'mud' ? MUD_DECEL : tri.mat === 'ice' ? ICE_DECEL : ROLL_DECEL;
-      if (sp > 0) {
-        const k = Math.max(0, sp - (grip + DRAG * sp) * DT) / sp;
-        b.vx *= k;
-        b.vy *= k;
+      const slide = Math.max(grip, tri.mat === 'ice' ? ICE_SLIDE : SLIDE_DECEL);
+      const sx = b.vx - b.wx;
+      const sy = b.vy - b.wy;
+      const slip = Math.hypot(sx, sy);
+      const rolling = slip <= 3.5 * slide * DT;
+      if (!rolling) {
+        // A solid ball's spin changes two and a half times as fast as its speed.
+        b.vx -= (sx / slip) * slide * DT;
+        b.vy -= (sy / slip) * slide * DT;
+        b.wx += (sx / slip) * slide * 2.5 * DT;
+        b.wy += (sy / slip) * slide * 2.5 * DT;
+      } else {
+        // Speed and spin meet where the ball's momentum says they must, then ease down together.
+        b.vx = (5 * b.vx + 2 * b.wx) / 7;
+        b.vy = (5 * b.vy + 2 * b.wy) / 7;
+        const sp = Math.hypot(b.vx, b.vy);
+        if (sp > 0) {
+          const k = Math.max(0, sp - grip * DT) / sp;
+          b.vx *= k;
+          b.vy *= k;
+        }
+        b.wx = b.vx;
+        b.wy = b.vy;
       }
-      const pushed = Math.hypot(ax, ay);
+      // A rolling ball feels five sevenths of any push; the rest goes into turning it.
+      const share = rolling ? 5 / 7 : 1;
+      const pushed = Math.hypot(ax, ay) * share;
+      const moving = b.vx !== 0 || b.vy !== 0;
       // The surface holds a still ball against a gentle slope.
-      if (pushed > grip || sp > 0) {
-        b.vx += ax * DT;
-        b.vy += ay * DT;
+      if (pushed > grip || moving) {
+        b.vx += ax * share * DT;
+        b.vy += ay * share * DT;
+        if (rolling) {
+          b.wx = b.vx;
+          b.wy = b.vy;
+        }
       }
-      if (pushed <= grip && Math.hypot(b.vx, b.vy) < STOP_SPEED) {
-        b.vx = 0;
-        b.vy = 0;
+      if (pushed <= grip && Math.hypot(b.vx, b.vy) < STOP_SPEED && slip < 0.5) {
+        b.vx = b.vy = b.wx = b.wy = 0;
       }
       // Carry the ground's rise as upward speed, so a ramp that ends throws the ball.
       b.vz = tri.gx * b.vx + tri.gy * b.vy;
@@ -345,7 +378,11 @@ function hitWalls(L: Level, b: Ball, res: StepResult): void {
 
     b.x = px + nx * rad;
     b.y = py + ny * rad;
-    if (vn < 0) {
+    if (vn < 0 && vn > -0.6) {
+      // Leaning on it, not hitting it (a slope pressing the ball against a wall): slide along.
+      b.vx -= vn * nx;
+      b.vy -= vn * ny;
+    } else if (vn < 0) {
       // Split into the part going into the wall and the part sliding along it.
       const tx = b.vx - vn * nx;
       const ty = b.vy - vn * ny;
@@ -354,6 +391,13 @@ function hitWalls(L: Level, b: Ball, res: StepResult): void {
       const keep = 1 - (1 - WALL_GRIP) * Math.min(1, -vn / 2);
       b.vx = tx * keep - RESTITUTION * vn * nx;
       b.vy = ty * keep - RESTITUTION * vn * ny;
+      // Only the roll into the wall is upset by the bounce: it turns round with the ball, less a
+      // share the ball must win back by skidding. The roll along the wall carries on untouched,
+      // which is what lets a ball ride a curved board.
+      const wn = b.wx * nx + b.wy * ny;
+      const out = b.vx * nx + b.vy * ny;
+      b.wx += (out * BOUNCE_SPIN - wn) * nx;
+      b.wy += (out * BOUNCE_SPIN - wn) * ny;
       note(res, -vn, c.kind === 'board' || c.kind === 'rail' ? 'board' : 'concrete');
     }
   }
@@ -368,11 +412,8 @@ function note(res: StepResult, speed: number, material: HitMaterial): void {
 
 /** How far a putt of this speed rolls on flat turf. Used by the bots. */
 export function rollDistance(speed: number): number {
-  let v = speed;
-  let d = 0;
-  while (v > STOP_SPEED) {
-    v = Math.max(0, v - (ROLL_DECEL + DRAG * v) * DT);
-    d += v * DT;
-  }
-  return d;
+  // It slides until it is down to five sevenths of the speed it was struck at, then rolls out.
+  const rolling = (speed * 5) / 7;
+  const slid = (speed * speed - rolling * rolling) / (2 * SLIDE_DECEL);
+  return slid + (rolling * rolling) / (2 * ROLL_DECEL);
 }

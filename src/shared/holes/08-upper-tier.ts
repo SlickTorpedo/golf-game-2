@@ -4,13 +4,13 @@ import { PINK, VIOLET } from './palette';
 // Upper Tier: climb the corkscrew to the balcony green above the tee, or
 // thread the players' tunnel and come out right beside the flag.
 //
-// Ace line: dead straight and nearly flat out from the tee, through the gap in
-//   the first bend, along the thin spur and into the tunnel. The ball comes out
-//   on the balcony still rolling east, at the cup.
+// Ace line: dead straight from the tee, 0.8 power or more and within a degree
+//   and a half, through the gap in the first bend, along the thin spur and into
+//   the tunnel. The ball comes out on the balcony still rolling east, at the cup.
 // Safe line: a soft putt to the first bend, up the ramp to the landing, round
 //   the banked corkscrew (it climbs a full level), back west over the bridge
-//   and onto the balcony. Par needs one putt to carry most of the corkscrew
-//   off its outside board; played carefully it is five or six.
+//   and onto the balcony. Even a full-power putt from the landing climbs only
+//   about half the corkscrew, so played carefully it is five or six.
 // Shortcut: the tunnel. The spur has no walls and the bend around it has only
 //   a kerb, so a hard tee shot that misses the spur hops the kerb and is lost.
 //   Overhit on the balcony and the ball drops off the south kerb, back down to
@@ -35,9 +35,9 @@ interface Pose {
 }
 
 /**
- * Lay a bend by hand, panel by panel, the way turn() is meant to (see the
- * report: turn() currently lays the second half of every bend wrongly).
- * Positive angle is to the right. Returns where the bend ends.
+ * Lay a bend panel by panel, like turn(), but with as many route points
+ * ("stones") along it as the bots need. Positive angle is to the right.
+ * Returns where the bend ends.
  */
 function bend(
   from: Pose,
@@ -105,8 +105,9 @@ pen = bend(pen, -18, 3, { width: 2.6, left: 'rail', right: 'board', stones: 1 })
 b.poly([[7.4, -0.5], [10.6, -0.5], [10.6, 0.5], [7.4, 0.5]], 0, { walls: ['none', 'board', 'none', 'none'] });
 b.at(10.1, 0, 0, 0).tunnelIn('players').item(-1.2, 0);
 
-// Up the ramp to the landing, where the bridge passes overhead.
-b.at(pen.x, pen.y, pen.heading, 0).width(2.6).walls('rail', 'board').straight(3, { rise: LANDING }).straight(1.8).item(-0.9, 0);
+// Up the ramp to the landing, where the bridge passes overhead. The ramp is
+// steep enough that a ball that fails to climb it rolls straight back down.
+b.at(pen.x, pen.y, pen.heading, 0).width(2.6).walls('rail', 'board').straight(2.6, { rise: LANDING }).straight(2.2).item(-0.9, 0);
 
 // The corkscrew: three quarters of a banked circle, climbing a full level.
 pen = bend({ x: 8, y: -7.8, z: LANDING, heading: 270 }, 270, 2.8, {

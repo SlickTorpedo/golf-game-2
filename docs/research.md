@@ -509,3 +509,17 @@ Party design and retention
 - https://theludite.com/2014/10/29/smash-bros-what-makes-a-party-game/ – short matches over catch-up; criticism of the blue shell and random items.
 - https://www.mariowiki.com/Item_Boxes – Mario Kart gives stronger items to trailing players (search summary).
 - https://www.mariowiki.com/Bonus_Star – Mario Party end-of-game bonus stars (search summary).
+
+
+---
+
+## Ball physics (added after play-testing)
+
+The owner played the build and said the ball "stops too abruptly" and does not roll enough. What a real putt does, and what the game now copies:
+
+- **A putt skids, then rolls.** A struck ball leaves the putter sliding. Friction with the grass slows it and spins it up until it is rolling without slipping; from then on it loses speed far more slowly. One putting patent that works from R. Penner's 2002 paper "The physics of putting" says a well-struck ball slides for about 14–20% of its travel and rolls for the rest ([US 10,585,993](https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/10585993), read via search summary; Penner's paper itself is listed on [Rod Cross's physics of golf page](https://www.physics.sydney.edu.au/~cross/GOLF/GOLF.htm) but I did not read it).
+- **The 5/7 rule.** A sliding solid ball that starts with no spin ends up rolling at five sevenths of its starting speed, whatever the friction; this is standard mechanics for a sphere ([Georgia Tech physics book, rolling motion](https://physicsbook.gatech.edu/Rolling_Motion)). The same patent gives the slowing of a rolling ball as (5/7)·ρ·g, with ρ between 0.065 and 0.196 on real greens (average 0.131), i.e. roughly 0.5 to 1.4 m/s².
+- **Stimp check.** A stimpmeter releases a ball at about 1.83 m/s ([Wikipedia: Stimpmeter](https://www.wikipedia.org/wiki/Stimpmeter)); on a green that "stimps" at 10 ft it rolls 3.05 m, which is a steady slowing of about 0.55 m/s² (my arithmetic from v²/2d).
+- **What games get wrong.** Forum answers on pool and rolling-ball physics say the same thing: model sliding friction acting on the contact point until spin matches speed, then switch to a much smaller rolling resistance ([gamedev.net, pool physics](https://gamedev.net/forums/topic/431840-pool-physics-backspin), via search summary). The old build used one strong friction plus a drag that grew with speed, about two to four times stronger than a real green at this game's scale, which is why the ball died early.
+
+What the build does now (`src/shared/physics.ts`, `constants.ts`): each ball carries spin as well as speed. While the two differ the ball slides (`SLIDE_DECEL` 10 units/s², spin changing 2.5 times as fast as speed, as for a solid sphere); when they meet it rolls (`ROLL_DECEL` 1.9 units/s²). A full putt now skids for about 15% of its trip and rolls out to 17.5 units over about four seconds, against 12 units before. Taking one unit as roughly 0.4 m (a mini-golf lane about a metre wide), 1.9 units/s² is about 0.75 m/s², inside the real range above. A wall bounce turns most of the spin round with the ball and leaves a short skid. The scale and the wall-spin share (60%) are my estimates, not sourced.

@@ -5,13 +5,16 @@ import { CYAN, LIME } from './palette';
 // A pitch shaped like an eye with a back line of cones across it, and a banked
 // stand curving round behind them. Go through the line or round the back of it.
 //
-// Ace line: flat out from the tee through the one wide gap in the cone line,
-//   the one that points at the flag.
+// Ace line: from the tee through the one wide gap in the cone line, the one
+//   that points at the flag: 0.8 power or more, and within half a degree.
 // Safe line: up the ramp on the left and round the banked stand, board on the
-//   outside. It ends above the green and drops the ball beside the flag.
+//   outside. The climb needs 0.85 power or more; anything softer rolls back
+//   to the tee pad. From the stand, a half-power putt or firmer drops the ball
+//   beside the flag.
 // Shortcut: the pitch. It is half the distance, but the gap is one ball and a
-//   bit wide, a cone kicks the ball back harder than it came, and a ball
-//   kicked flat out goes over the low rail on the open side of the pitch.
+//   bit wide, a cone kicks the ball back harder than it came (usually all the
+//   way to the tee pad), and a ball kicked flat out goes over the low rail on
+//   the open side of the pitch.
 const b = new HoleBuilder({ id: 'offside-trap', name: 'Offside Trap', par: 3, boards: [CYAN, LIME] });
 
 const deg = (d: number) => (d * Math.PI) / 180;
@@ -67,6 +70,8 @@ b.poly(outline, 0, { walls: edges });
 
 // The high road: off the tee pad, up a curving ramp and round the stand to
 // its end above the green. Bots are not sent this way: they go for the gap.
+// The ramp is short and steep, so a ball that fails to climb it rolls back to
+// the tee pad instead of creeping down.
 b.at(TEE.x, TEE.y, STAND.from + 90)
   .width(STAND.half * 2)
   .walls('none')
@@ -74,7 +79,8 @@ b.at(TEE.x, TEE.y, STAND.from + 90)
   .turn(17, STAND.r)
   .turn(5, STAND.r, { left: 'board' })
   .walls('board', 'kerb')
-  .turn(30, STAND.r, { rise: STAND.up })
+  .turn(8, STAND.r)
+  .turn(22, STAND.r, { rise: STAND.up })
   .turn(88, STAND.r, { bank: 0.25 });
 b.at(...on(NORTH, STAND.r, 285), 0, STAND.up).item();
 
@@ -91,5 +97,10 @@ const cones: [number, number][] = [
 ];
 for (const [x, y] of cones) b.at(x, y, 0, 0).cone();
 b.at(8.6, 1.9, 0, 0).item();
+
+// Bots lay up short of the gap, then thread it with a firm putt at the flag. A
+// cone that catches a ball sends it all the way back to the tee pad, so going
+// for the gap from the tee is a gamble they do not take.
+b.way(5.2, 0.92).way(8.6, 1.48, 0, 0.6);
 
 export default b.build();

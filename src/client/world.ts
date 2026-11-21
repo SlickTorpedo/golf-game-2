@@ -9,7 +9,7 @@ import { BALL_R, PITCH_DROP } from '../shared/constants';
 import type { Level } from '../shared/level';
 import type { HitMaterial } from '../shared/physics';
 import type { ItemKind, Pickup } from '../shared/protocol';
-import { Course, CourseTextures } from './course';
+import { CUT, Course, CourseTextures } from './course';
 import { Particles, Trail } from './fx';
 import * as paint from './textures';
 
@@ -19,6 +19,9 @@ export const ITEM_COLORS: Record<ItemKind, number> = {
   sandal: 0x2ee6ff,
   swap: 0xff7a1a,
   peanuts: 0xd9ff2e,
+  steady: 0xa98bff,
+  magnet: 0xff5252,
+  horn: 0xf4f4f4,
 };
 
 const NIGHT = 0x070b1c;
@@ -627,7 +630,7 @@ export class World {
         focus.lerp(new THREE.Vector3(this.follow.x, this.follow.z, this.follow.y), stay);
       }
     }
-    distGoal = Math.min(56, distGoal);
+    distGoal = Math.min(120, distGoal);
     pitchGoal = Math.min(MAX_PITCH, Math.max(MIN_PITCH, pitchGoal));
     const turn = 1 - Math.exp(-dt * (quick ? 10 : 2.2));
     this.yaw += (this.yawGoal - this.yaw) * turn;
@@ -658,6 +661,9 @@ export class World {
     cam.updateProjectionMatrix();
 
     // ---- things that move by themselves
+    // Keep your ball in view: thin out whatever stands between it and the camera.
+    CUT.on.value = this.mode === 'play' && this.follow ? 1 : 0;
+    if (this.follow) CUT.ball.value.set(this.follow.x, this.follow.z + BALL_R, this.follow.y);
     this.course?.update(dt, this.time, tick, ballNearCup, this.yaw);
     this.backdrop?.update(dt, this.time);
     this.particles.update(dt);
@@ -744,6 +750,25 @@ function buildPickup(kind: ItemKind): THREE.Group {
     b.position.x = 0.09;
     b.rotation.x = Math.PI / 2;
     prop.add(a, b);
+  } else if (kind === 'steady') {
+    // A tall glass of iced tea with a straw.
+    prop = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.1, 0.3, 20), mat);
+    const straw = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.34, 8), new THREE.MeshStandardMaterial({ color: 0xffffff }));
+    straw.position.set(0.04, 0.12, 0);
+    straw.rotation.z = -0.3;
+    prop.add(straw);
+  } else if (kind === 'magnet') {
+    // A supporter's scarf, knotted in a loop.
+    prop = new THREE.Mesh(new THREE.TorusKnotGeometry(0.12, 0.045, 64, 10, 2, 3), mat);
+  } else if (kind === 'horn') {
+    // An air horn: can and trumpet.
+    prop = new THREE.Group();
+    const can = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.22, 16), mat);
+    can.position.y = -0.08;
+    const bell = new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.24, 20, 1, true), new THREE.MeshPhysicalMaterial({ color: 0xff2e93, roughness: 0.3, clearcoat: 1, side: THREE.DoubleSide }));
+    bell.position.set(0.1, 0.1, 0);
+    bell.rotation.z = Math.PI / 2;
+    prop.add(can, bell);
   } else {
     // A peanut in its shell.
     prop = new THREE.Group();
