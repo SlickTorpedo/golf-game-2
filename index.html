@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#070b1c" />
+    <title>Bubaran</title>
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+    <div id="labels"></div>
+
+    <div id="hud" hidden>
+      <div id="holeTag"><b id="holeNo"></b><span id="holeName"></span><i id="holePar"></i></div>
+      <div id="strokes"><b id="strokeNum">0</b><span>putts</span></div>
+      <div id="side">
+        <div id="clock"></div>
+        <ol id="board"></ol>
+        <div id="items"></div>
+      </div>
+      <div id="tools">
+        <button id="rotL" title="Turn the view left (Q)">Turn ↺</button>
+        <button id="rotR" title="Turn the view right (E)">Turn ↻</button>
+        <button id="mute">Sound on</button>
+      </div>
+      <div id="toast"></div>
+      <div id="hint">Drag back anywhere, let go to putt. Scroll to zoom.</div>
+    </div>
+
+    <section id="title">
+      <h1>BUBARAN</h1>
+      <form id="start">
+        <p class="lead">The match is over and the stands are empty. The groundsman, the tea seller and the ball boy are putting across the terraces.</p>
+        <p class="gloss"><b>bubaran</b> — Javanese for the moment a crowd lets out.</p>
+        <label>Your name <input id="name" maxlength="14" autocomplete="off" spellcheck="false" /></label>
+        <fieldset>
+          <legend>Who stays behind with you</legend>
+          <div id="bots"></div>
+        </fieldset>
+        <button type="submit">Kick off</button>
+      </form>
+    </section>
+
+    <section id="card" hidden>
+      <h2 id="cardTitle"></h2>
+      <div class="sheet">
+        <p id="cardNote"></p>
+        <table id="cardTable"></table>
+        <button id="cardBtn"></button>
+      </div>
+    </section>
+
+    <script type="module" src="/src/client/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,582 @@
+:root {
+  --night: #070b1c;
+  --ink: #0a0c12;
+  --lime: #d9ff2e;
+  --pink: #ff2e93;
+  --chalk: #f3f5ee;
+  --dim: rgba(243, 245, 238, 0.62);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--night);
+  color: var(--chalk);
+  font: 600 16px/1.3 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  letter-spacing: 0.02em;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+#view {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: crosshair;
+}
+
+button,
+input {
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  border: 0;
+  border-radius: 0;
+}
+
+/* ------------------------------------------------------------ name tags */
+
+#labels span {
+  position: fixed;
+  transform: translate(-50%, -100%);
+  padding: 0 5px;
+  font-size: 14px;
+  background: var(--ink);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ HUD */
+
+#hud > * {
+  position: fixed;
+}
+
+/* The hole's name runs up the left edge like the lettering on a stand. */
+#holeTag {
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 13vh;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2.5vh;
+  padding: 3vh 0;
+  font-style: italic;
+  font-weight: 800;
+  text-transform: uppercase;
+  line-height: 0.9;
+  pointer-events: none;
+}
+
+#holeNo {
+  font-size: 13vh;
+  color: var(--lime);
+}
+
+#holeName {
+  font-size: 7.5vh;
+}
+
+#holePar {
+  font-size: 3.2vh;
+  color: var(--dim);
+  font-weight: 600;
+}
+
+#strokes {
+  left: 15vh;
+  bottom: 2vh;
+  display: flex;
+  align-items: baseline;
+  gap: 1vh;
+  pointer-events: none;
+}
+
+#strokeNum {
+  font-size: 22vh;
+  font-style: italic;
+  font-weight: 800;
+  line-height: 0.8;
+}
+
+#strokeNum.over {
+  color: var(--pink);
+}
+
+#strokes span {
+  font-size: 2.8vh;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+#side {
+  right: 0;
+  top: 0;
+  width: min(250px, 44vw);
+  pointer-events: none;
+}
+
+#clock {
+  padding: 8px 14px 0;
+  text-align: right;
+  font-size: 54px;
+  font-weight: 800;
+  font-style: italic;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+#clock.late {
+  color: var(--pink);
+}
+
+#board {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+#board li {
+  display: grid;
+  grid-template-columns: 8px 1fr 34px 34px;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 14px 3px 0;
+  font-size: 19px;
+  background: rgba(7, 11, 28, 0.78);
+  border-bottom: 1px solid rgba(243, 245, 238, 0.12);
+}
+
+#board li i {
+  align-self: stretch;
+  background: var(--c);
+}
+
+#board li.me {
+  background: var(--chalk);
+  color: var(--ink);
+}
+
+#board li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#board li b,
+#board li em {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-style: normal;
+}
+
+#board li em {
+  opacity: 0.6;
+  font-weight: 600;
+}
+
+#board li.head {
+  font-size: 13px;
+  text-transform: uppercase;
+  color: var(--dim);
+  background: none;
+  border: 0;
+}
+
+#items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
+  pointer-events: auto;
+}
+
+#items button {
+  padding: 8px 12px 9px;
+  text-align: left;
+  background: var(--c);
+  color: var(--ink);
+  line-height: 1.05;
+}
+
+#items button b {
+  display: block;
+  font-size: 22px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+#items button small {
+  font-size: 14px;
+}
+
+#items button:active {
+  transform: translateY(2px);
+}
+
+#items .empty {
+  padding: 6px 14px 6px 10px;
+  background: rgba(7, 11, 28, 0.78);
+  color: var(--dim);
+  font-size: 14px;
+}
+
+#tools {
+  right: 14px;
+  bottom: 18px;
+  display: flex;
+  gap: 6px;
+}
+
+#tools button {
+  padding: 7px 11px;
+  background: rgba(7, 11, 28, 0.8);
+  border: 1px solid rgba(243, 245, 238, 0.35);
+  font-size: 16px;
+  text-transform: uppercase;
+}
+
+#tools button:hover {
+  background: var(--chalk);
+  color: var(--ink);
+}
+
+#toast {
+  left: 50%;
+  top: 16vh;
+  transform: translateX(-50%) skewX(-8deg);
+  padding: 2px 22px 6px;
+  background: var(--lime);
+  color: var(--ink);
+  font-size: 9vh;
+  font-weight: 800;
+  font-style: italic;
+  text-transform: uppercase;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.25s;
+}
+
+#toast.on {
+  opacity: 1;
+}
+
+#toast.bad {
+  background: var(--pink);
+}
+
+#hint {
+  left: calc(13vh + 18px);
+  top: 14px;
+  padding: 4px 12px;
+  background: var(--ink);
+  font-size: 18px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------- title screen */
+
+#title {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: 46vw;
+  min-width: 430px;
+  display: flex;
+  background: var(--lime);
+  color: var(--ink);
+}
+
+#title h1 {
+  margin: 0;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-size: 25.5vh;
+  font-weight: 800;
+  font-style: italic;
+  line-height: 0.82;
+  letter-spacing: -0.01em;
+  text-align: center;
+  flex: none;
+}
+
+#start {
+  align-self: flex-end;
+  padding: 0 4vw 6vh 2.5vw;
+  max-width: 420px;
+  user-select: text;
+}
+
+#start .lead {
+  margin: 0 0 12px;
+  font-size: 25px;
+  line-height: 1.12;
+}
+
+#start .gloss {
+  margin: 0 0 26px;
+  font-size: 17px;
+  font-weight: 500;
+}
+
+#start label,
+#start legend {
+  display: block;
+  padding: 0;
+  font-size: 15px;
+  text-transform: uppercase;
+}
+
+#start input {
+  display: block;
+  width: 100%;
+  margin: 3px 0 18px;
+  padding: 6px 10px;
+  border: 3px solid var(--ink);
+  border-radius: 0;
+  background: transparent;
+  font-size: 26px;
+  font-weight: 800;
+  outline: none;
+}
+
+#start input:focus {
+  background: #fff;
+}
+
+#start fieldset {
+  margin: 0 0 22px;
+  padding: 0;
+  border: 0;
+}
+
+#bots {
+  display: flex;
+  margin-top: 4px;
+  border: 3px solid var(--ink);
+}
+
+#bots button {
+  flex: 1;
+  padding: 6px 4px;
+  background: transparent;
+  font-size: 19px;
+  font-weight: 800;
+  line-height: 1.05;
+}
+
+#bots button + button {
+  border-left: 3px solid var(--ink);
+}
+
+#bots button[aria-pressed='true'] {
+  background: var(--ink);
+  color: var(--lime);
+}
+
+#start button[type='submit'],
+#cardBtn {
+  padding: 8px 30px 12px;
+  background: var(--ink);
+  color: var(--lime);
+  font-size: 42px;
+  font-weight: 800;
+  font-style: italic;
+  text-transform: uppercase;
+}
+
+#start button[type='submit']:hover,
+#cardBtn:hover {
+  background: var(--pink);
+  color: var(--ink);
+}
+
+/* ------------------------------------------------------------- scorecard */
+
+#card {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  background: rgba(7, 11, 28, 0.9);
+}
+
+#cardTitle {
+  margin: 0;
+  flex: none;
+  width: 24vh;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  background: var(--lime);
+  color: var(--ink);
+  font-size: 17vh;
+  font-weight: 800;
+  font-style: italic;
+  line-height: 24vh;
+  text-align: center;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.sheet {
+  flex: 1;
+  align-self: center;
+  padding: 4vh 5vw;
+  max-width: 900px;
+}
+
+#cardNote {
+  margin: 0 0 2vh;
+  font-size: 30px;
+  font-weight: 800;
+  font-style: italic;
+  text-transform: uppercase;
+}
+
+#cardTable {
+  width: 100%;
+  margin-bottom: 4vh;
+  border-collapse: collapse;
+  font-size: 26px;
+  font-variant-numeric: tabular-nums;
+}
+
+#cardTable th {
+  padding: 4px 8px;
+  font-size: 15px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--dim);
+  text-align: right;
+}
+
+#cardTable td {
+  padding: 5px 8px;
+  text-align: right;
+  border-top: 1px solid rgba(243, 245, 238, 0.2);
+}
+
+#cardTable th:first-child,
+#cardTable td:first-child {
+  text-align: left;
+  border-left: 8px solid var(--c, transparent);
+}
+
+#cardTable td.under {
+  color: var(--lime);
+}
+
+#cardTable td.fail {
+  color: var(--pink);
+}
+
+#cardTable td:last-child {
+  font-weight: 800;
+  font-size: 32px;
+}
+
+#cardTable tr.me td {
+  background: rgba(243, 245, 238, 0.12);
+}
+
+/* ---------------------------------------------------------- small screens */
+
+@media (max-width: 760px) {
+  #title {
+    inset: auto 0 0 0;
+    width: auto;
+    min-width: 0;
+    height: 62vh;
+  }
+  #title h1 {
+    font-size: 8.6vh;
+  }
+  #start {
+    padding: 0 16px 14px 10px;
+    overflow: auto;
+    max-height: 100%;
+  }
+  #start .lead {
+    font-size: 19px;
+  }
+  #start .gloss {
+    margin-bottom: 12px;
+  }
+  #holeTag {
+    width: 9vh;
+  }
+  #holePar {
+    display: none;
+  }
+  #holeNo {
+    font-size: 8vh;
+  }
+  #holeName {
+    font-size: 4.5vh;
+  }
+  #strokes {
+    left: 10vh;
+    bottom: 44px;
+  }
+  #strokeNum {
+    font-size: 13vh;
+  }
+  #side {
+    width: 170px;
+  }
+  #clock {
+    font-size: 38px;
+  }
+  #board li {
+    font-size: 16px;
+  }
+  #tools {
+    top: auto;
+    bottom: 84px;
+    flex-direction: column;
+  }
+  #hint {
+    left: 0;
+    right: 0;
+    top: auto;
+    bottom: 0;
+    font-size: 15px;
+    text-align: center;
+  }
+  #toast {
+    font-size: 5vh;
+  }
+  #cardTitle {
+    width: 9vh;
+    font-size: 6.5vh;
+    line-height: 9vh;
+  }
+  #cardTable {
+    font-size: 18px;
+  }
+  #cardTable td:last-child {
+    font-size: 21px;
+  }
+}
