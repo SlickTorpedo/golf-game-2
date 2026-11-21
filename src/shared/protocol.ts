@@ -19,6 +19,7 @@ export interface PlayerState {
   /** Where the last putt was struck from. Out of bounds puts the ball back here. */
   restX: number;
   restY: number;
+  restZ: number;
   strokes: number;
   holed: boolean;
   /** Finished this hole, holed or not. */
@@ -27,6 +28,8 @@ export interface PlayerState {
   /** One entry per finished hole. */
   scores: number[];
   items: ItemKind[];
+  /** Tallies for the awards at full time. */
+  stats: { falls: number; hits: number; items: number; aces: number; air: number };
   /** Ticks until a bot putts again. */
   wait: number;
 }
@@ -35,6 +38,7 @@ export interface Pickup {
   id: number;
   x: number;
   y: number;
+  z: number;
   kind: ItemKind;
   /** Ticks until it is back. 0 means it can be taken. */
   cooldown: number;
@@ -63,6 +67,8 @@ export type GameEvent =
   | { t: 'out'; p: string; x: number; y: number; z: number; water: boolean }
   | { t: 'tunnel'; p: string; x: number; y: number }
   | { t: 'boost'; p: string }
+  | { t: 'hop'; p: string }
+  | { t: 'spring'; p: string; x: number; y: number }
   | { t: 'pickup'; p: string; kind: ItemKind }
   | { t: 'item'; p: string; kind: ItemKind; x: number; y: number };
 
@@ -71,7 +77,9 @@ export type ClientMsg =
   | { t: 'start'; name: string; bots: number }
   | { t: 'putt'; dx: number; dy: number }
   | { t: 'item'; slot: number }
-  | { t: 'ready' };
+  | { t: 'ready' }
+  /** Give up on where the ball is: back to where it was last hit from, for one putt. */
+  | { t: 'reset' };
 
 export type ServerMsg =
   | { t: 'welcome'; you: string; host: boolean }

@@ -16,11 +16,13 @@ export const WALL_H = 0.5; // height of a board above the floor it stands on
 export const STEP_UP = 0.12; // ledges lower than this are rolled over
 
 export const GRAVITY = 30;
-export const SLOPE_ACCEL = 8;
+/** Pull down a slope, per unit of gradient (a 1-in-2 ramp gives half of this). */
+export const SLOPE_ACCEL = 16;
 export const BOOST_ACCEL = 26;
 // A heavy ball: little air drag, so it carries its speed and then dies on the turf.
 export const ROLL_DECEL = 3.4;
 export const MUD_DECEL = 15;
+export const ICE_DECEL = 0.5;
 export const DRAG = 0.35;
 export const STOP_SPEED = 0.07;
 export const RESTITUTION = 0.6; // off boards and ledges
@@ -42,15 +44,21 @@ export const ARM_LEN = 1.3; // turnstile arm, centre to tip
 export const ARM_R = 0.07;
 export const SPIN_RATE = 1.5; // radians per second
 export const TUNNEL_R = 0.3;
+export const SPRING_R = 0.34;
+export const SPRING_UP = 9;
 /** The pitch is this far below level 0; a falling ball is lost when it gets there. */
 export const PITCH_DROP = 3.5;
-export const KILL_Z = -PITCH_DROP + BALL_R;
+/** A ball this far below the lowest ground of the hole is lost. */
+export const KILL_DROP = PITCH_DROP - BALL_R;
 
 export const STROKE_CAP = 8;
-export const PENALTY_SCORE = 10;
+/** The most a hole can cost: not holing out scores this, or par + 4 if that is less. */
+export const PENALTY_SCORE = 9;
+/** Once only one player is still putting, the clock drops to this many seconds. */
+export const LAST_PLAYER_SECONDS = 20;
 export const HOLE_SECONDS = 90;
 export const INTRO_SECONDS = 2.5;
-export const HOLE_END_SECONDS = 9;
+export const HOLE_END_SECONDS = 6;
 
 export const MAX_ITEMS = 2;
 export const MAX_PLAYERS = 8;

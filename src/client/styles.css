@@ -265,6 +265,21 @@ button {
   text-transform: uppercase;
 }
 
+#views {
+  display: flex;
+  margin-right: 8px;
+}
+
+#views button + button {
+  border-left: 0;
+}
+
+#tools button[aria-pressed='true'] {
+  background: var(--lime);
+  color: var(--ink);
+  border-color: var(--lime);
+}
+
 #tools button:hover {
   background: var(--chalk);
   color: var(--ink);
@@ -303,6 +318,19 @@ button {
   margin-top: 4px;
   background: linear-gradient(90deg, var(--chalk) var(--p), rgba(243, 245, 238, 0.18) var(--p));
   transform: skewX(-12deg);
+}
+
+/* Marks at a quarter, half and three quarters, so a strength can be repeated. */
+#power i {
+  position: relative;
+  display: block;
+}
+
+#power i::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 24%, var(--ink) 24% 26%, transparent 26% 49%, var(--ink) 49% 51%, transparent 51% 74%, var(--ink) 74% 76%, transparent 76%);
 }
 
 #power.full b {
@@ -508,10 +536,38 @@ button {
 
 #cardTable {
   width: 100%;
-  margin-bottom: 4vh;
+  margin-bottom: 2.5vh;
   border-collapse: collapse;
   font-size: 26px;
   font-variant-numeric: tabular-nums;
+}
+
+#cardAwards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  margin: 0 0 3vh;
+  padding: 0;
+  list-style: none;
+}
+
+#cardAwards li {
+  padding-left: 10px;
+  border-left: 6px solid var(--c);
+  line-height: 1.1;
+}
+
+#cardAwards b {
+  display: block;
+  font-size: 24px;
+  font-weight: 800;
+  font-style: italic;
+  text-transform: uppercase;
+}
+
+#cardAwards span {
+  font-size: 16px;
+  color: var(--dim);
 }
 
 #cardTable th {

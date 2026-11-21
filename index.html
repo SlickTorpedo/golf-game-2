@@ -20,12 +20,16 @@
         <div id="items"></div>
       </div>
       <div id="tools">
+        <span id="views" title="Camera view (C)">
+          <button data-view="follow">Follow</button><button data-view="wide">Wide</button><button data-view="top">Top</button>
+        </span>
+        <button id="reset" title="Put your ball back where you last hit it from, for one putt (R)" hidden>Reset ball +1</button>
         <button id="music"></button>
         <button id="sfx"></button>
       </div>
       <div id="power" hidden><b id="powerNum"></b><span>power</span><i></i></div>
       <div id="toast"></div>
-      <div id="hint">Left-drag back and let go to putt · right-drag to look around · scroll to zoom</div>
+      <div id="hint">Left-drag back and let go to putt · right-drag to look around · scroll to zoom · C changes view</div>
     </div>
 
     <section id="title">
@@ -47,6 +51,7 @@
       <div class="sheet">
         <p id="cardNote"></p>
         <table id="cardTable"></table>
+        <ul id="cardAwards"></ul>
         <button id="cardBtn"></button>
       </div>
     </section>

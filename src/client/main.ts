@@ -8,15 +8,16 @@ import { createLocalPair } from '../net/channel';
 import { Room } from '../server/room';
 import { MAX_PUTT, MIN_PUTT, PENALTY_SCORE, STROKE_CAP, TICK_RATE } from '../shared/constants';
 import { STADIUM } from '../shared/courses';
-import { cellAt, parseLevel, topAt } from '../shared/level';
+import { compileLevel, floorAt, hitTri } from '../shared/level';
 import { total } from '../shared/match';
-import { isGrounded, stepBall } from '../shared/physics';
+import { stepBall } from '../shared/physics';
 import type { ClientMsg, GameEvent, ItemKind, MatchState, PlayerState, ServerMsg } from '../shared/protocol';
 import { Sound } from './audio';
 import type { Scene, Surface } from './audio';
 import { GameClient } from './client';
 import { Stadium } from './stadium';
 import { ITEM_COLORS, PLAYER_COLORS, World } from './world';
+import type { View } from './world';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const css = (n: number) => `#${n.toString(16).padStart(6, '0')}`;
@@ -64,7 +65,7 @@ const [clientEnd, serverEnd] = createLocalPair<ClientMsg, ServerMsg>(lag / 2);
 room.connect(serverEnd);
 const client = new GameClient(clientEnd, store.get('name') ?? '');
 
-const levels = STADIUM.map(parseLevel);
+const levels = STADIUM.map(compileLevel);
 const world = new World($<HTMLCanvasElement>('view'));
 world.setBackdrop(new Stadium(world.renderer));
 const sound = new Sound();
@@ -73,6 +74,7 @@ sound.setSfx(store.get('sfx') !== '0');
 
 let shownHole = -1;
 let framedHole = -1;
+let framedPlay = -1;
 let wasLobby = true;
 let hasPutted = false;
 let toastUntil = 0;
@@ -122,7 +124,8 @@ window.addEventListener('keydown', () => sound.unlock(), { capture: true });
 
 // ------------------------------------------------------------------ input
 //
-// Left button (or one finger): pull back and let go to putt.
+// Left button (or one finger): pull back and let go to putt. The pull is read
+// on the screen, not on the ground, so it feels the same from any camera.
 // Right button (or two fingers): look around. Wheel or pinch: zoom.
 
 const canvas = world.renderer.domElement;
@@ -130,6 +133,8 @@ const pointers = new Map<number, { x: number; y: number }>();
 let aim: { id: number; sx: number; sy: number; dx: number; dy: number; power: number } | null = null;
 let orbitId = -1;
 let pinch = 0;
+let lastOrbit = -1e9;
+let wasMoving = false;
 
 function canPutt(): boolean {
   const s = client.state;
@@ -174,23 +179,24 @@ canvas.addEventListener('pointermove', (e) => {
   }
   if (e.pointerId === orbitId) {
     world.orbitBy(mx, my);
+    lastOrbit = performance.now();
     return;
   }
-  const me = client.me;
-  if (!aim || aim.id !== e.pointerId || !me) return;
-  const a = world.groundPoint(aim.sx, aim.sy, me.ball.z);
-  const b = world.groundPoint(e.clientX, e.clientY, me.ball.z);
-  if (!a || !b) return;
+  if (!aim || aim.id !== e.pointerId) return;
   // Pull back like a slingshot: the ball goes the opposite way.
-  const px = a.x - b.x;
-  const py = a.y - b.y;
+  const px = e.clientX - aim.sx;
+  const py = e.clientY - aim.sy;
   const len = Math.hypot(px, py);
-  aim.power = Math.min(1, len / 3.4);
+  const full = Math.min(window.innerWidth, window.innerHeight) * 0.32;
+  aim.power = Math.min(1, len / full);
   const box = $('power');
   box.style.left = `${Math.min(window.innerWidth - 170, e.clientX)}px`;
   box.style.top = `${Math.min(window.innerHeight - 90, e.clientY)}px`;
-  aim.dx = len ? px / len : 0;
-  aim.dy = len ? py / len : 0;
+  if (len > 3) {
+    const d = world.aimDir(px, py);
+    aim.dx = d.x;
+    aim.dy = d.y;
+  }
 });
 
 function release(e: PointerEvent, fire: boolean): void {
@@ -221,8 +227,24 @@ window.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
   if (k === '1' || k === '2') client.send({ t: 'item', slot: Number(k) - 1 });
   else if (k === 'escape') aim = null;
+  else if (k === 'r') client.send({ t: 'reset' });
+  else if (k === 'c') setView(VIEWS[(VIEWS.indexOf(world.view) + 1) % VIEWS.length]);
   else if (k === 'enter' || k === ' ') cardAction();
 });
+
+const VIEWS: View[] = ['follow', 'wide', 'top'];
+function setView(v: View): void {
+  world.setView(v);
+  store.set('view', v);
+  sound.ui('toggle');
+  document.querySelectorAll<HTMLElement>('#views button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.view === v)));
+}
+document.querySelectorAll<HTMLElement>('#views button').forEach((b) => (b.onclick = () => setView(b.dataset.view as View)));
+const savedView = store.get('view') as View | null;
+world.setView(savedView && VIEWS.includes(savedView) ? savedView : 'follow');
+document.querySelectorAll<HTMLElement>('#views button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.view === world.view)));
+
+$('reset').onclick = () => client.send({ t: 'reset' });
 
 const musicEl = $('music');
 const sfxEl = $('sfx');
@@ -262,6 +284,9 @@ function toast(text: string, bad = false): void {
   el.className = bad ? 'on bad' : 'on';
   toastUntil = performance.now() + 1700;
 }
+
+/** What not holing out costs on a hole of this par. */
+const penalty = (par: number) => Math.min(PENALTY_SCORE, par + 4);
 
 function verdict(strokes: number, par: number): string {
   if (strokes === 1) return 'Hole in one';
@@ -324,13 +349,19 @@ client.onEvents = (events: GameEvent[], s: MatchState) => {
       world.sparkleFx(at.x, at.y, at.z, 0xff7a1a);
     } else if (e.t === 'boost') {
       sound.boost(gain);
+    } else if (e.t === 'hop') {
+      sound.land(4, gain);
+      world.squash(e.p, 0.6);
+    } else if (e.t === 'spring') {
+      sound.boost(gain);
+      sound.land(7, gain);
+      world.springFx(e.x, e.y, at.z);
     } else if (e.t === 'pickup') {
       if (mine) sound.pickup();
       world.sparkleFx(at.x, at.y, at.z, ITEM_COLORS[e.kind]);
     } else if (e.t === 'item') {
       sound.item(e.kind, mine ? 1 : 0.7);
-      const z = topAt(L, e.x, e.y);
-      const floor = Number.isFinite(z) ? z : at.z;
+      const floor = at.z;
       world.pulse(e.x, e.y, floor, ITEM_COLORS[e.kind], e.kind === 'drum' ? 3.4 : 1.2);
       world.sparkleFx(e.x, e.y, floor, ITEM_COLORS[e.kind], e.kind === 'drum' ? 60 : 24);
       if (e.kind === 'drum') world.shake(0.3);
@@ -422,6 +453,8 @@ function drawHud(s: MatchState, me: PlayerState | undefined): void {
   });
 
   $('hint').hidden = hasPutted || s.phase !== 'playing';
+  // Offered once there is somewhere to go back to.
+  $('reset').hidden = !me || me.done || me.strokes < 1 || s.phase !== 'playing';
   if (performance.now() > toastUntil) $('toast').classList.remove('on');
 }
 
@@ -443,8 +476,8 @@ function drawCard(s: MatchState): void {
       ? `${rows[0].name} wins with ${total(rows[0])}`
       : mine == null
         ? ''
-        : mine >= PENALTY_SCORE
-          ? `Not holed: ${PENALTY_SCORE} on the card`
+        : mine >= penalty(L.def.par)
+          ? `Not holed: ${mine} on the card`
           : `${verdict(mine, L.def.par)} · ${mine} on a par ${L.def.par}`;
 
     const head = el('tr');
@@ -458,15 +491,37 @@ function drawCard(s: MatchState): void {
       tr.append(name);
       levels.forEach((lv, i) => {
         const sc = p.scores[i];
-        const cls = sc == null ? '' : sc >= PENALTY_SCORE ? 'fail' : sc < lv.def.par ? 'under' : '';
+        const cls = sc == null ? '' : sc >= penalty(lv.def.par) ? 'fail' : sc < lv.def.par ? 'under' : '';
         tr.append(el('td', sc == null ? '' : String(sc), cls));
       });
       tr.append(el('td', String(total(p))));
       return tr;
     });
     $('cardTable').replaceChildren(head, ...body);
+    $('cardAwards').replaceChildren(...(final ? awards(s) : []));
     sound.scoreCount();
   });
+}
+
+/** Titles handed out at full time. They are for fun and do not change the score. */
+function awards(s: MatchState): HTMLLIElement[] {
+  const kinds: [keyof PlayerState['stats'], string, string][] = [
+    ['aces', 'One and done', 'holes in one'],
+    ['hits', 'Pinball wizard', 'things hit'],
+    ['air', 'Frequent flyer', 'time in the air'],
+    ['falls', "Gravity's friend", 'balls lost'],
+    ['items', 'Menace', 'leftovers used'],
+  ];
+  const out: HTMLLIElement[] = [];
+  for (const [key, title, what] of kinds) {
+    const best = [...s.players].sort((a, b) => b.stats[key] - a.stats[key])[0];
+    if (!best || best.stats[key] <= 0 || out.length >= 3) continue;
+    const li = el('li');
+    li.style.setProperty('--c', css(PLAYER_COLORS[best.color]));
+    li.append(el('b', title), el('span', `${best.name} · most ${what}`));
+    out.push(li);
+  }
+  return out;
 }
 
 const tags = new Map<string, HTMLSpanElement>();
@@ -566,6 +621,20 @@ function frame(now: number): void {
   const playing = s.phase === 'playing' && !!mine && !me?.done;
   world.mode = lobby ? 'title' : playing ? 'play' : 'overview';
   world.follow = playing ? mine : null;
+  world.followVel = me && me.moving ? { x: me.ball.vx, y: me.ball.vy } : { x: 0, y: 0 };
+  // When your ball comes to rest (and at the start of a hole), swing round to look down the
+  // route, unless you have just been looking around yourself.
+  if (playing && me && mine && !me.moving && (wasMoving || framedPlay !== s.hole) && now - lastOrbit > 2500) {
+    framedPlay = s.hole;
+    let near = 0;
+    L.line.forEach((w, k) => {
+      const d = (q: typeof w) => Math.hypot(q.x - mine.x, q.y - mine.y) + Math.abs(q.z - mine.z) * 4;
+      if (d(w) < d(L.line[near])) near = k;
+    });
+    const to = L.line[Math.min(L.line.length - 1, near + 1)];
+    world.faceAlong(to.x - mine.x, to.y - mine.y);
+  }
+  wasMoving = !!me?.moving;
   world.shift = lobby && wide ? 0.23 : 0;
   world.lift = lobby && !wide ? 0.34 : 0;
 
@@ -593,8 +662,9 @@ function frame(now: number): void {
   let speed = 0;
   if (me && mine && playing && me.moving) {
     speed = world.ballSpeed(me.id);
-    const c = cellAt(L, Math.floor(mine.x), Math.floor(mine.y));
-    surface = !isGrounded(L, { ...me.ball, x: mine.x, y: mine.y, z: mine.z }) ? 'air' : c.surface;
+    const floor = floorAt(L, mine.x, mine.y, mine.z + 0.1);
+    const mat = hitTri?.mat;
+    surface = !Number.isFinite(floor) || mine.z > floor + 0.06 ? 'air' : mat === 'mud' ? 'mud' : mat === 'track' ? 'track' : 'turf';
   }
   sound.roll(speed, surface);
 

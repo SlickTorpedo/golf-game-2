@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import { ARM_LEN, ARM_R, CONE_R, CUP_R, PITCH_DROP, TUNNEL_R, WALL_H } from '../shared/constants';
-import { Cell, DIRS, Level, cellAt, cornerHeights, topAt } from '../shared/level';
+import { ARM_LEN, ARM_R, CONE_R, CUP_R, PITCH_DROP, SPRING_R, TUNNEL_R } from '../shared/constants';
+import { Level, WALL_HALF, WALL_HEIGHT, floorAt, topAt } from '../shared/level';
 import { spinnerAngle } from '../shared/physics';
+import { AD_COUNT } from './textures';
 
 export interface CourseTextures {
   turf: THREE.Texture;
@@ -9,41 +10,38 @@ export interface CourseTextures {
   mud: THREE.Texture;
   track: THREE.Texture;
   chevron: THREE.Texture;
-  board: THREE.Texture;
-  lid: THREE.Texture;
+  ice: THREE.Texture;
+  ads: THREE.Texture;
+  kerb: THREE.Texture;
+  cup: THREE.Texture;
   ripple: THREE.Texture;
 }
 
-const TURF_A = 0x24e678;
-const TURF_B = 0x19c563;
-const DECK_BOTTOM = -0.35;
-const BASIN = 0.3;
-const CUP_DEPTH = 0.5;
+const DECK = 0.35;
+/** One ad panel is this long on a board. */
+const AD_LEN = 2.4;
 
-/** Collects quads for one material. */
+type V = [number, number, number];
+
+/** Collects triangles for one material. Points are scene coordinates: x, up, z. */
 class Buf {
   pos: number[] = [];
   uv: number[] = [];
   col: number[] = [];
   private c = new THREE.Color();
 
-  /** Corners counter-clockwise seen from the front. */
-  quad(p: number[][], uv: number[][], hex = 0xffffff, scale = 1): void {
+  tri(p: V[], uv: number[][], hex = 0xffffff, scale = 1): void {
     this.c.setHex(hex).multiplyScalar(scale);
-    for (const i of [0, 1, 2, 0, 2, 3]) {
+    for (let i = 0; i < 3; i++) {
       this.pos.push(p[i][0], p[i][1], p[i][2]);
       this.uv.push(uv[i][0], uv[i][1]);
       this.col.push(this.c.r, this.c.g, this.c.b);
     }
   }
 
-  tri(p: number[][], uv: number[][], hex = 0xffffff): void {
-    this.c.setHex(hex);
-    for (let i = 0; i < 3; i++) {
-      this.pos.push(p[i][0], p[i][1], p[i][2]);
-      this.uv.push(uv[i][0], uv[i][1]);
-      this.col.push(this.c.r, this.c.g, this.c.b);
-    }
+  quad(p: V[], uv: number[][], hex = 0xffffff, scale = 1): void {
+    this.tri([p[0], p[1], p[2]], [uv[0], uv[1], uv[2]], hex, scale);
+    this.tri([p[0], p[2], p[3]], [uv[0], uv[2], uv[3]], hex, scale);
   }
 
   mesh(mat: THREE.Material): THREE.Mesh | null {
@@ -57,327 +55,310 @@ class Buf {
   }
 }
 
-/** Scale a colour so every board glows about equally, whatever its hue. */
+/** Scale a colour so every glowing thing shines about equally, whatever its hue. */
 function glow(hex: number): number {
   const c = new THREE.Color(hex);
   const lum = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
   return Math.min(2.6, 0.95 / Math.max(0.05, lum));
 }
 
-/** Corner heights as drawn: water is a shallow basin. */
-function drawnCorners(c: Cell): [number, number, number, number] {
-  if (c.kind === 'water') return [c.h - BASIN, c.h - BASIN, c.h - BASIN, c.h - BASIN];
-  return cornerHeights(c);
-}
-
-/** One hole as a scene: deck, boards, cup, obstacles, and the scaffolding it stands on. */
+/** One hole as a scene: ground, walls, cup, obstacles, and the scaffolding it stands on. */
 export class Course {
   readonly group = new THREE.Group();
   private readonly flag = new THREE.Group();
-  private readonly cloth: THREE.Mesh;
-  private readonly clothBase: Float32Array;
+  private cloth!: THREE.Mesh;
+  private clothBase!: Float32Array;
   private flagLift = 0;
+  private cupDecal!: THREE.Mesh;
   private readonly spinners: { rotor: THREE.Group; dir: number }[] = [];
   private readonly cones: { mesh: THREE.Group; x: number; y: number; wobble: number; ax: number; az: number }[] = [];
+  private readonly springs: { mesh: THREE.Group; x: number; y: number; kick: number }[] = [];
   private readonly scrollers: { tex: THREE.Texture; sx: number; sy: number }[] = [];
   private readonly rings: THREE.Mesh[] = [];
 
   constructor(
     readonly level: Level,
-    tex: CourseTextures,
+    private readonly tex: CourseTextures,
   ) {
-    const L = level;
+    this.buildGround();
+    this.buildWalls();
+    this.buildCup();
+    this.buildFlag();
+    this.buildTee();
+    this.buildProps();
+    this.buildScaffold();
+  }
+
+  private add(m: THREE.Mesh | null, cast: boolean, receive: boolean): THREE.Mesh | null {
+    if (!m) return null;
+    m.castShadow = cast;
+    m.receiveShadow = receive;
+    this.group.add(m);
+    return m;
+  }
+
+  // ------------------------------------------------------------ pieces
+
+  private buildGround(): void {
+    const L = this.level;
+    const def = L.def;
+    const tex = this.tex;
     const turf = new Buf();
     const mud = new Buf();
     const track = new Buf();
-    const concrete = new Buf();
-    const led = new Buf();
-    const lids = new Buf();
-    const chevrons = new Buf();
+    const ice = new Buf();
     const water = new Buf();
-    const cupCell = { x: Math.floor(L.cup.x), y: Math.floor(L.cup.y) };
+    const chevrons = new Buf();
+    const sides = new Buf();
+    const key = (p: number[]) => `${Math.round(p[0] * 1000)},${Math.round(p[1] * 1000)},${Math.round(p[2] * 1000)}`;
+    const edges = new Map<string, { n: number; a: number[]; b: number[]; cx: number; cy: number; bridge: boolean }>();
 
-    for (let cy = 0; cy < L.h; cy++) {
-      for (let cx = 0; cx < L.w; cx++) {
-        const c = cellAt(L, cx, cy);
-        if (c.kind === 'void') continue;
-        const [nw, ne, se, sw] = drawnCorners(c);
-        const P = [
-          [cx, nw, cy],
-          [cx + 1, ne, cy],
-          [cx + 1, se, cy + 1],
-          [cx, sw, cy + 1],
-        ];
-        const topQuad = [P[0], P[3], P[2], P[1]];
-        const worldUv = (s: number) => topQuad.map((p) => [p[0] * s, p[2] * s]);
+    for (const t of def.tris) {
+      const p = t.v.map((i) => [def.verts[i * 3], def.verts[i * 3 + 1], def.verts[i * 3 + 2]]);
+      // Face up: the map's y runs south, which flips the winding.
+      const area = (p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[2][0] - p[0][0]) * (p[1][1] - p[0][1]);
+      if (Math.abs(area) < 1e-9) continue;
+      const o = area > 0 ? [p[0], p[2], p[1]] : p;
+      const v = o.map((q): V => [q[0], q[2], q[1]]);
+      const world = (s: number) => o.map((q) => [q[0] * s, q[1] * s]);
+      if (t.mat === 'mud') mud.tri(v, world(0.5));
+      else if (t.mat === 'ice') ice.tri(v, world(0.4));
+      else if (t.mat === 'water') water.tri(v, world(0.5));
+      else if (t.mat === 'track') {
+        track.tri(v, world(1));
+        const [px, py] = t.push ?? [1, 0];
+        chevrons.tri(
+          v.map((q): V => [q[0], q[1] + 0.006, q[2]]),
+          o.map((q) => [q[0] * px + q[1] * py, q[0] * -py + q[1] * px]),
+        );
+      } else turf.tri(v, world(0.25));
 
-        // ---- the surface you putt on
-        if (c.kind === 'water') {
-          concrete.quad(topQuad, worldUv(0.5), 0x2c4a5e);
-          const y = c.h - 0.07;
-          water.quad(
-            [
-              [cx, y, cy],
-              [cx, y, cy + 1],
-              [cx + 1, y, cy + 1],
-              [cx + 1, y, cy],
-            ],
-            worldUv(0.5),
-          );
-        } else if (c.kind === 'block') {
-          concrete.quad(topQuad, worldUv(0.5));
-        } else if (cx === cupCell.x && cy === cupCell.y) {
-          this.cutCup(turf, cx, cy, c.h, cy % 2 ? TURF_A : TURF_B);
-        } else if (c.surface === 'mud') {
-          mud.quad(topQuad, worldUv(0.5));
-        } else if (c.surface === 'track') {
-          track.quad(topQuad, worldUv(1));
-          // Chevrons lie along the push direction; u runs that way so the texture can scroll.
-          const [dx, dy] = DIRS[c.dir];
-          const y = c.h + 0.006;
-          const along = (p: number[]) => (p[0] - cx - 0.5) * dx + (p[2] - cy - 0.5) * dy + 0.5;
-          const across = (p: number[]) => (p[0] - cx - 0.5) * -dy + (p[2] - cy - 0.5) * dx + 0.5;
-          const q = topQuad.map((p) => [p[0], y, p[2]]);
-          chevrons.quad(q, q.map((p) => [along(p) + cx * dx + cy * dy, across(p)]));
-        } else {
-          // Ramps are a paler green so the slope reads from above.
-          turf.quad(topQuad, worldUv(0.25), c.kind === 'ramp' ? 0x8af7bb : cy % 2 ? TURF_A : TURF_B);
-        }
-
-        // ---- sides of the deck wherever the neighbour is lower or missing
-        for (let d = 0; d < 4; d++) {
-          const a = P[d];
-          const b = P[(d + 1) % 4];
-          const n = cellAt(L, cx + DIRS[d][0], cy + DIRS[d][1]);
-          let na = DECK_BOTTOM;
-          let nb = DECK_BOTTOM;
-          if (n.kind !== 'void') {
-            const nh = drawnCorners(n);
-            na = nh[[3, 0, 1, 2][d]];
-            nb = nh[[2, 3, 0, 1][d]];
-          }
-          if (a[1] <= na + 1e-6 && b[1] <= nb + 1e-6) continue;
-          const la = Math.min(a[1], na);
-          const lb = Math.min(b[1], nb);
-          const u0 = a[0] + a[2];
-          const u1 = u0 + 1;
-          const band = n.kind === 'void' ? 0.1 : 0;
-          if (band) {
-            // A painted lip along the open edge, so you can see where the deck stops.
-            concrete.quad(
-              [a, [a[0], a[1] - band, a[2]], [b[0], b[1] - band, b[2]], b],
-              [[u0, 0.02], [u0, 0.0], [u1, 0.0], [u1, 0.02]],
-              L.def.boards[0],
-              1.3,
-            );
-          }
-          concrete.quad(
-            [[a[0], a[1] - band, a[2]], [a[0], la, a[2]], [b[0], lb, b[2]], [b[0], b[1] - band, b[2]]],
-            [[u0 / 2, a[1] / 2], [u0 / 2, la / 2], [u1 / 2, lb / 2], [u1 / 2, b[1] / 2]],
-          );
-        }
-
-        // ---- advertising boards
-        if (c.kind === 'block') {
-          const top = c.h + WALL_H;
-          lids.quad(
-            [
-              [cx, top, cy],
-              [cx, top, cy + 1],
-              [cx + 1, top, cy + 1],
-              [cx + 1, top, cy],
-            ],
-            worldUv(1),
-            L.def.boards[((cx + cy) >> 1) & 1],
-            0.62,
-          );
-          for (let d = 0; d < 4; d++) {
-            const n = cellAt(L, cx + DIRS[d][0], cy + DIRS[d][1]);
-            let nTop = -Infinity;
-            if (n.kind === 'block') nTop = n.h + WALL_H;
-            else if (n.kind !== 'void') {
-              const nh = drawnCorners(n);
-              nTop = Math.max(nh[[3, 0, 1, 2][d]], nh[[2, 3, 0, 1][d]]);
-            }
-            const bottom = Math.max(c.h, nTop);
-            if (bottom >= top - 0.01) continue;
-            const a = P[d];
-            const b = P[(d + 1) % 4];
-            // "Right" as seen by someone facing this side, so the lettering reads forwards.
-            const [nx, nz] = DIRS[d];
-            const along = (p: number[]) => p[0] * nz - p[2] * nx;
-            const ua = along(a);
-            const ub = along(b);
-            const v0 = (bottom - c.h) / WALL_H;
-            const panel = Math.floor((Math.min(ua, ub) + 1000) / 2) % 2;
-            const hex = L.def.boards[panel];
-            led.quad(
-              [[a[0], top, a[2]], [b[0], top, b[2]], [b[0], bottom, b[2]], [a[0], bottom, a[2]]],
-              [[ua / 16, 1], [ub / 16, 1], [ub / 16, v0], [ua / 16, v0]],
-              hex,
-              glow(hex),
-            );
-          }
-        }
+      const cx = (p[0][0] + p[1][0] + p[2][0]) / 3;
+      const cy = (p[0][1] + p[1][1] + p[2][1]) / 3;
+      for (let i = 0; i < 3; i++) {
+        const a = p[i];
+        const b = p[(i + 1) % 3];
+        const ka = key(a);
+        const kb = key(b);
+        const k = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+        const e = edges.get(k);
+        if (e) e.n++;
+        else edges.set(k, { n: 1, a, b, cx, cy, bridge: !!t.bridge });
       }
     }
 
-    const add = (m: THREE.Mesh | null, cast: boolean, receive: boolean) => {
-      if (!m) return;
-      m.castShadow = cast;
-      m.receiveShadow = receive;
-      this.group.add(m);
-    };
-    add(turf.mesh(new THREE.MeshStandardMaterial({ map: tex.turf, vertexColors: true, roughness: 0.92 })), false, true);
-    add(mud.mesh(new THREE.MeshStandardMaterial({ map: tex.mud, roughness: 0.45 })), false, true);
-    add(track.mesh(new THREE.MeshStandardMaterial({ map: tex.track, roughness: 0.8 })), false, true);
-    add(
-      concrete.mesh(
-        new THREE.MeshStandardMaterial({ map: tex.concrete, vertexColors: true, roughness: 0.85, side: THREE.DoubleSide }),
-      ),
-      true,
-      true,
-    );
-    // LED faces give out light, so they ignore the floodlights and shadows.
-    add(led.mesh(new THREE.MeshBasicMaterial({ map: tex.board, vertexColors: true })), true, false);
-    add(
-      lids.mesh(new THREE.MeshStandardMaterial({ map: tex.lid, vertexColors: true, roughness: 0.55 })),
-      true,
-      true,
-    );
-    this.scrollers.push({ tex: tex.board, sx: 0.012, sy: 0 });
+    // Where the ground stops, give it an edge with some thickness: down to
+    // whatever lies below, or a deck's depth if there is only air.
+    for (const e of edges.values()) {
+      if (e.n !== 1) continue;
+      const mx = (e.a[0] + e.b[0]) / 2;
+      const my = (e.a[1] + e.b[1]) / 2;
+      const mz = (e.a[2] + e.b[2]) / 2;
+      let nx = e.b[1] - e.a[1];
+      let ny = -(e.b[0] - e.a[0]);
+      const len = Math.hypot(nx, ny) || 1;
+      nx /= len;
+      ny /= len;
+      if (nx * (mx - e.cx) + ny * (my - e.cy) < 0) {
+        nx = -nx;
+        ny = -ny;
+      }
+      const beyond = floorAt(L, mx + nx * 0.06, my + ny * 0.06, mz + 0.05);
+      if (beyond > mz - 0.04) continue; // ground carries on at this height
+      const below = floorAt(L, mx + nx * 0.06, my + ny * 0.06, mz - 0.1);
+      const open = !Number.isFinite(below);
+      // A bridge keeps a thin deck edge even over lower ground, so you can see under it.
+      const drop = (z: number) => (e.bridge ? z - 0.16 : open ? z - DECK : Math.min(z - 0.02, below));
+      const a: V = [e.a[0], e.a[2], e.a[1]];
+      const b: V = [e.b[0], e.b[2], e.b[1]];
+      const band = open ? 0.07 : 0;
+      const u0 = e.a[0] + e.a[1];
+      const u1 = u0 + len;
+      if (band) {
+        // A painted lip, so you can see where the ground ends.
+        sides.quad([a, [a[0], a[1] - band, a[2]], [b[0], b[1] - band, b[2]], b], [[0, 0], [0, 0], [0, 0], [0, 0]], def.boards[0], 1.25);
+      }
+      sides.quad(
+        [[a[0], a[1] - band, a[2]], [a[0], drop(e.a[2]), a[2]], [b[0], drop(e.b[2]), b[2]], [b[0], b[1] - band, b[2]]],
+        [[u0 / 2, e.a[2] / 2], [u0 / 2, drop(e.a[2]) / 2], [u1 / 2, drop(e.b[2]) / 2], [u1 / 2, e.b[2] / 2]],
+      );
+    }
 
-    const chev = chevrons.mesh(
-      new THREE.MeshBasicMaterial({ map: tex.chevron, transparent: true, opacity: 0.9, depthWrite: false }),
+    this.add(turf.mesh(new THREE.MeshStandardMaterial({ map: tex.turf, color: 0x25e078, roughness: 0.92 })), false, true);
+    this.add(mud.mesh(new THREE.MeshStandardMaterial({ map: tex.mud, roughness: 0.45 })), false, true);
+    this.add(track.mesh(new THREE.MeshStandardMaterial({ map: tex.track, roughness: 0.8 })), false, true);
+    this.add(
+      ice.mesh(new THREE.MeshPhysicalMaterial({ map: tex.ice, roughness: 0.08, clearcoat: 1, envMapIntensity: 2.2 })),
+      false,
+      true,
     );
+    this.add(
+      sides.mesh(new THREE.MeshStandardMaterial({ map: tex.concrete, vertexColors: true, roughness: 0.85, side: THREE.DoubleSide })),
+      true,
+      true,
+    );
+
+    const chev = chevrons.mesh(new THREE.MeshBasicMaterial({ map: tex.chevron, transparent: true, opacity: 0.9, depthWrite: false }));
     if (chev) {
       this.group.add(chev);
       this.scrollers.push({ tex: tex.chevron, sx: -1.6, sy: 0 });
     }
 
     const pool = water.mesh(
-      new THREE.MeshPhysicalMaterial({
-        color: 0x0f6ea3,
-        roughness: 0.05,
-        metalness: 0.1,
-        transparent: true,
-        opacity: 0.8,
-        envMapIntensity: 3,
-      }),
+      new THREE.MeshPhysicalMaterial({ color: 0x0f6ea3, roughness: 0.05, metalness: 0.1, transparent: true, opacity: 0.85, envMapIntensity: 3 }),
     );
     if (pool) {
       pool.receiveShadow = true;
       this.group.add(pool);
       const ripples = new THREE.Mesh(
         pool.geometry,
-        new THREE.MeshBasicMaterial({
-          map: tex.ripple,
-          transparent: true,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-          opacity: 0.95,
-        }),
+        new THREE.MeshBasicMaterial({ map: tex.ripple, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }),
       );
       ripples.position.y = 0.004;
       this.group.add(ripples);
       this.scrollers.push({ tex: tex.ripple, sx: 0.05, sy: 0.03 });
     }
-
-    this.buildCup();
-    this.cloth = this.buildFlag();
-    this.clothBase = (this.cloth.geometry.getAttribute('position').array as Float32Array).slice();
-    this.buildTee();
-    this.buildProps();
-    this.buildScaffold();
   }
 
-  // ------------------------------------------------------------ pieces
+  /** Walls are thin slabs standing on the ground. */
+  private buildWalls(): void {
+    const def = this.level.def;
+    const tex = this.tex;
+    const kerb = new Buf();
+    const rail = new Buf();
+    const strip = new Buf();
+    const ads = new Buf();
+    const frame = new Buf();
+    const flat = [[0, 0], [0, 0], [0, 0], [0, 0]];
+    /** How far along its run of boards each board end is, keyed by position. */
+    const runs = new Map<string, number>();
+    let nextRun = 0;
 
-  /** The cup's cell: turf with a real round hole in it. */
-  private cutCup(turf: Buf, cx: number, cy: number, h: number, hex: number): void {
-    const L = this.level;
-    const shape = new THREE.Shape();
-    shape.moveTo(cx, cy);
-    shape.lineTo(cx + 1, cy);
-    shape.lineTo(cx + 1, cy + 1);
-    shape.lineTo(cx, cy + 1);
-    shape.closePath();
-    shape.holes.push(new THREE.Path().absarc(L.cup.x, L.cup.y, CUP_R, 0, Math.PI * 2, false));
-    const g = new THREE.ShapeGeometry(shape, 40);
-    const p = g.getAttribute('position');
-    const idx = g.getIndex()!;
-    for (let i = 0; i < idx.count; i += 3) {
-      // Reverse the winding: the shape is drawn in the map plane, which is upside down here.
-      const tri = [idx.getX(i), idx.getX(i + 2), idx.getX(i + 1)].map((k) => [p.getX(k), h, p.getY(k)]);
-      turf.tri(tri, tri.map((q) => [q[0] * 0.25, q[2] * 0.25]), hex);
+    for (const w of def.walls) {
+      const h = WALL_HEIGHT[w.kind];
+      let dx = w.b.x - w.a.x;
+      let dy = w.b.y - w.a.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 1e-6) continue;
+      dx /= len;
+      dy /= len;
+      // Run a little past each end so neighbouring pieces meet at corners.
+      const ext = WALL_HALF;
+      const ax = w.a.x - dx * ext;
+      const ay = w.a.y - dy * ext;
+      const bx = w.b.x + dx * ext;
+      const by = w.b.y + dy * ext;
+      const nx = -dy * WALL_HALF;
+      const ny = dx * WALL_HALF;
+      // Corners: a/b ends, l/r sides, bottom/top.
+      const P = (x: number, y: number, z: number): V => [x, z, y];
+      const al0 = P(ax + nx, ay + ny, w.a.z - 0.02);
+      const ar0 = P(ax - nx, ay - ny, w.a.z - 0.02);
+      const bl0 = P(bx + nx, by + ny, w.b.z - 0.02);
+      const br0 = P(bx - nx, by - ny, w.b.z - 0.02);
+      const al1 = P(ax + nx, ay + ny, w.a.z + h);
+      const ar1 = P(ax - nx, ay - ny, w.a.z + h);
+      const bl1 = P(bx + nx, by + ny, w.b.z + h);
+      const br1 = P(bx - nx, by - ny, w.b.z + h);
+      const top = [al1, bl1, br1, ar1];
+      const sideL = [al1, al0, bl0, bl1];
+      const sideR = [br1, br0, ar0, ar1];
+      const ends = [
+        [ar1, ar0, al0, al1],
+        [bl1, bl0, br0, br1],
+      ];
+
+      if (w.kind === 'kerb') {
+        const u0 = (w.a.x + w.a.y) * 0.7;
+        const u1 = u0 + len * 0.7;
+        const uv = [[u0, 1], [u0, 0], [u1, 0], [u1, 1]];
+        for (const q of [top, sideL, sideR]) kerb.quad(q, uv);
+        for (const q of ends) kerb.quad(q, flat);
+      } else if (w.kind === 'rail') {
+        for (const q of [sideL, sideR, ...ends]) rail.quad(q, flat, def.boards[0], 0.8);
+        // A lit strip along the top.
+        strip.quad(top, flat, def.boards[1], glow(def.boards[1]) * 0.62);
+      } else {
+        // Advertising board: the same strip of ads on both faces, reading left to right from either side.
+        // q runs top-left, bottom-left, bottom-right, top-right as seen by someone facing that side;
+        // u must grow to their right for the lettering to read forwards.
+        // Distance along the board carries on from the piece before, so lettering runs unbroken round a bend.
+        const spot = (p: { x: number; y: number }) => `${Math.round(p.x * 100)},${Math.round(p.y * 100)}`;
+        const start = runs.get(spot(w.a)) ?? Math.ceil(nextRun / AD_LEN) * AD_LEN;
+        const end = start + len;
+        runs.set(spot(w.b), end);
+        nextRun = Math.max(nextRun, end);
+        const u = (d: number) => d / (AD_LEN * AD_COUNT);
+        const face = (q: V[], from: number, to: number) => ads.quad(q, [[u(from), 1], [u(from), 0], [u(to), 0], [u(to), 1]]);
+        face([al1, al0, bl0, bl1], start, end);
+        face([br1, br0, ar0, ar1], -end, -start);
+        for (const q of [top, ...ends]) frame.quad(q, flat);
+      }
     }
-    g.dispose();
+
+    this.add(kerb.mesh(new THREE.MeshStandardMaterial({ map: tex.kerb, roughness: 0.6, side: THREE.DoubleSide })), true, true);
+    this.add(
+      rail.mesh(new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.3, clearcoat: 0.7, side: THREE.DoubleSide })),
+      true,
+      true,
+    );
+    this.add(strip.mesh(new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide })), false, false);
+    // Boards give out their own light, so they ignore the floodlights and shadows.
+    this.add(ads.mesh(new THREE.MeshBasicMaterial({ map: tex.ads, side: THREE.DoubleSide })), true, false);
+    this.add(frame.mesh(new THREE.MeshStandardMaterial({ color: 0x15171d, roughness: 0.6, side: THREE.DoubleSide })), true, true);
   }
 
   private buildCup(): void {
     const L = this.level;
-    const z = topAt(L, L.cup.x, L.cup.y);
-    const wall = new THREE.Mesh(
-      new THREE.CylinderGeometry(CUP_R, CUP_R, CUP_DEPTH, 40, 1, true),
-      new THREE.MeshStandardMaterial({ color: 0x565c68, roughness: 0.7, side: THREE.BackSide }),
+    // Drawn just above the turf and turned toward the camera each frame, so the lit side is always the far wall.
+    this.cupDecal = new THREE.Mesh(
+      new THREE.CircleGeometry(CUP_R, 40).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ map: this.tex.cup, transparent: true, polygonOffset: true, polygonOffsetFactor: -4 }),
     );
-    wall.position.set(L.cup.x, z - CUP_DEPTH / 2, L.cup.y);
-    wall.receiveShadow = true;
-    const floor = new THREE.Mesh(
-      new THREE.CircleGeometry(CUP_R, 32).rotateX(-Math.PI / 2),
-      new THREE.MeshStandardMaterial({ color: 0x0c0e13, roughness: 0.9 }),
-    );
-    floor.position.set(L.cup.x, z - CUP_DEPTH, L.cup.y);
-    const rim = new THREE.Mesh(
-      new THREE.TorusGeometry(CUP_R, 0.014, 8, 48).rotateX(Math.PI / 2),
-      new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.35 }),
-    );
-    rim.position.set(L.cup.x, z + 0.002, L.cup.y);
+    this.cupDecal.position.set(L.cup.x, L.cup.z + 0.004, L.cup.y);
     // A chalk ring round the cup, like the centre circle.
     const ring = new THREE.Mesh(
-      new THREE.RingGeometry(CUP_R + 0.2, CUP_R + 0.26, 48).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 }),
+      new THREE.RingGeometry(CUP_R + 0.22, CUP_R + 0.28, 48).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, polygonOffset: true, polygonOffsetFactor: -4 }),
     );
-    ring.position.set(L.cup.x, z + 0.005, L.cup.y);
-    this.group.add(wall, floor, rim, ring);
+    ring.position.set(L.cup.x, L.cup.z + 0.004, L.cup.y);
+    this.group.add(this.cupDecal, ring);
   }
 
-  private buildFlag(): THREE.Mesh {
+  private buildFlag(): void {
     const L = this.level;
     const hex = L.def.boards[1];
-    const z = topAt(L, L.cup.x, L.cup.y);
     const pole = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.03, 0.03, 2.9, 10),
+      new THREE.CylinderGeometry(0.03, 0.03, 2.5, 10),
       new THREE.MeshStandardMaterial({ color: 0xf5f5f0, roughness: 0.35, metalness: 0.2 }),
     );
-    pole.position.y = 1.45 - CUP_DEPTH;
+    pole.position.y = 1.25;
     pole.castShadow = true;
     const knob = new THREE.Mesh(
       new THREE.SphereGeometry(0.06, 12, 8),
       new THREE.MeshBasicMaterial({ color: new THREE.Color(hex).multiplyScalar(glow(hex)) }),
     );
-    knob.position.y = 2.42;
+    knob.position.y = 2.52;
     // A long pennant with enough segments to ripple.
     const geo = new THREE.PlaneGeometry(1.15, 0.62, 14, 4).translate(0.575, 0, 0);
-    const cloth = new THREE.Mesh(
+    this.cloth = new THREE.Mesh(
       geo,
       new THREE.MeshStandardMaterial({ color: hex, emissive: hex, emissiveIntensity: 0.55, roughness: 0.7, side: THREE.DoubleSide }),
     );
-    cloth.position.y = 2.05;
-    cloth.castShadow = true;
-    this.flag.add(pole, knob, cloth);
-    this.flag.position.set(L.cup.x, z, L.cup.y);
+    this.cloth.position.y = 2.15;
+    this.cloth.castShadow = true;
+    this.clothBase = (geo.getAttribute('position').array as Float32Array).slice();
+    this.flag.add(pole, knob, this.cloth);
+    this.flag.position.set(L.cup.x, L.cup.z, L.cup.y);
     this.flag.rotation.y = 0.5;
     this.group.add(this.flag);
-    return cloth;
   }
 
   private buildTee(): void {
     const L = this.level;
-    const z = topAt(L, L.tee.x, L.tee.y);
-    const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 });
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, polygonOffset: true, polygonOffsetFactor: -4 });
     const spot = new THREE.Mesh(new THREE.CircleGeometry(0.1, 24).rotateX(-Math.PI / 2), mat);
-    spot.position.set(L.tee.x, z + 0.005, L.tee.y);
+    spot.position.set(L.tee.x, L.tee.z + 0.004, L.tee.y);
     const arc = new THREE.Mesh(new THREE.RingGeometry(0.34, 0.38, 40).rotateX(-Math.PI / 2), mat);
     arc.position.copy(spot.position);
     this.group.add(spot, arc);
@@ -387,6 +368,7 @@ export class Course {
     const L = this.level;
     const steel = new THREE.MeshStandardMaterial({ color: 0xc9d0dc, roughness: 0.25, metalness: 0.9 });
     const rubber = new THREE.MeshStandardMaterial({ color: 0x15171c, roughness: 0.8 });
+    const lit = (hex: number) => new THREE.MeshBasicMaterial({ color: new THREE.Color(hex).multiplyScalar(glow(hex)) });
 
     // Traffic cones.
     const orange = new THREE.MeshPhysicalMaterial({ color: 0xff6a14, roughness: 0.35, clearcoat: 0.5, emissive: 0xff4a00, emissiveIntensity: 0.25 });
@@ -401,17 +383,15 @@ export class Course {
       band.position.y = 0.3;
       g.add(base, body, band);
       g.traverse((o) => (o.castShadow = true));
-      g.position.set(c.x, topAt(L, c.x, c.y), c.y);
+      g.position.set(c.x, c.z, c.y);
       this.group.add(g);
       this.cones.push({ mesh: g, x: c.x, y: c.y, wobble: 0, ax: 0, az: 0 });
     }
 
     // Turnstiles: a post with two bars through it.
-    const tip = new THREE.MeshBasicMaterial({ color: new THREE.Color(L.def.boards[0]).multiplyScalar(glow(L.def.boards[0])) });
     for (const s of L.spinners) {
-      const z = topAt(L, s.x, s.y);
       const post = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.13, 0.42, 20), rubber);
-      post.position.set(s.x, z + 0.21, s.y);
+      post.position.set(s.x, s.z + 0.21, s.y);
       post.castShadow = true;
       const rotor = new THREE.Group();
       for (let k = 0; k < 2; k++) {
@@ -420,7 +400,7 @@ export class Course {
         bar.castShadow = true;
         rotor.add(bar);
         for (const side of [-1, 1]) {
-          const cap = new THREE.Mesh(new THREE.SphereGeometry(ARM_R * 1.25, 12, 8), tip);
+          const cap = new THREE.Mesh(new THREE.SphereGeometry(ARM_R * 1.25, 12, 8), lit(L.def.boards[0]));
           cap.position.set(k ? 0 : side * ARM_LEN, 0, k ? side * ARM_LEN : 0);
           rotor.add(cap);
         }
@@ -428,33 +408,46 @@ export class Course {
       const cap = new THREE.Mesh(new THREE.SphereGeometry(0.12, 16, 10), steel);
       cap.position.y = 0.18;
       rotor.add(cap);
-      rotor.position.set(s.x, z + 0.2, s.y);
+      rotor.position.set(s.x, s.z + 0.2, s.y);
       this.group.add(post, rotor);
       this.spinners.push({ rotor, dir: s.dir });
     }
 
+    // Spring pads: a striped plate on a coil.
+    for (const p of L.springs) {
+      const g = new THREE.Group();
+      const plate = new THREE.Mesh(
+        new THREE.CylinderGeometry(SPRING_R, SPRING_R, 0.05, 28),
+        new THREE.MeshPhysicalMaterial({ color: 0xffd21f, roughness: 0.3, clearcoat: 0.8, emissive: 0xffa800, emissiveIntensity: 0.35 }),
+      );
+      plate.position.y = 0.05;
+      const rim = new THREE.Mesh(new THREE.TorusGeometry(SPRING_R, 0.025, 8, 28).rotateX(Math.PI / 2), lit(0xff2e93));
+      rim.position.y = 0.075;
+      const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.13, 0.22, 4), lit(0xff2e93));
+      arrow.position.y = 0.2;
+      g.add(plate, rim, arrow);
+      g.position.set(p.x, p.z, p.y);
+      this.group.add(g);
+      this.springs.push({ mesh: g, x: p.x, y: p.y, kick: 0 });
+    }
+
     // Players' tunnel: a dark mouth with a lit ring, and a ring where the ball comes out.
     for (const t of L.tunnels) {
-      for (const [x, y, hex, isMouth] of [
-        [t.x, t.y, 0x2ee6ff, true],
-        [t.tx, t.ty, 0xff7a1a, false],
+      for (const [p, hex, isMouth] of [
+        [t.from, 0x2ee6ff, true],
+        [t.to, 0xff7a1a, false],
       ] as const) {
-        const z = topAt(L, x, y);
         const hole = new THREE.Mesh(
           new THREE.CircleGeometry(TUNNEL_R, 32).rotateX(-Math.PI / 2),
-          new THREE.MeshBasicMaterial({ color: isMouth ? 0x020308 : 0x1a0f08 }),
+          new THREE.MeshBasicMaterial({ color: isMouth ? 0x020308 : 0x1a0f08, polygonOffset: true, polygonOffsetFactor: -4 }),
         );
-        hole.position.set(x, z + 0.006, y);
-        const ring = new THREE.Mesh(
-          new THREE.RingGeometry(TUNNEL_R, TUNNEL_R + 0.08, 40).rotateX(-Math.PI / 2),
-          new THREE.MeshBasicMaterial({ color: new THREE.Color(hex).multiplyScalar(glow(hex)), transparent: true }),
-        );
-        ring.position.set(x, z + 0.008, y);
-        const arch = new THREE.Mesh(
-          new THREE.TorusGeometry(TUNNEL_R + 0.1, 0.045, 10, 28, Math.PI),
-          new THREE.MeshBasicMaterial({ color: new THREE.Color(hex).multiplyScalar(glow(hex)) }),
-        );
-        arch.position.set(x, z, y);
+        hole.position.set(p.x, p.z + 0.004, p.y);
+        const ring = new THREE.Mesh(new THREE.RingGeometry(TUNNEL_R, TUNNEL_R + 0.08, 40).rotateX(-Math.PI / 2), lit(hex));
+        (ring.material as THREE.MeshBasicMaterial).polygonOffset = true;
+        (ring.material as THREE.MeshBasicMaterial).polygonOffsetFactor = -5;
+        ring.position.set(p.x, p.z + 0.005, p.y);
+        const arch = new THREE.Mesh(new THREE.TorusGeometry(TUNNEL_R + 0.1, 0.045, 10, 28, Math.PI), lit(hex));
+        arch.position.set(p.x, p.z, p.y);
         arch.castShadow = true;
         this.group.add(hole, ring, arch);
         this.rings.push(ring);
@@ -465,15 +458,17 @@ export class Course {
   /** Scaffold tubes from the deck down to the pitch, so the course stands on something. */
   private buildScaffold(): void {
     const L = this.level;
-    const solid = (cx: number, cy: number) => cellAt(L, cx, cy).kind !== 'void';
-    const under = (gx: number, gy: number) => solid(gx, gy) || solid(gx - 1, gy) || solid(gx, gy - 1) || solid(gx - 1, gy - 1);
-    const posts: [number, number][] = [];
-    for (let gy = 0; gy <= L.h; gy += 2) {
-      for (let gx = 0; gx <= L.w; gx += 2) if (under(gx, gy)) posts.push([gx, gy]);
+    const pitch = L.minZ - PITCH_DROP;
+    const posts: [number, number, number][] = [];
+    for (let y = Math.ceil(L.minY / 2) * 2; y <= L.maxY; y += 2) {
+      for (let x = Math.ceil(L.minX / 2) * 2; x <= L.maxX; x += 2) {
+        // Stand a post only where there is ground a little way in every direction, so none poke out past an edge.
+        const h = Math.min(topAt(L, x + 0.25, y), topAt(L, x - 0.25, y), topAt(L, x, y + 0.25), topAt(L, x, y - 0.25));
+        if (Number.isFinite(h)) posts.push([x, y, floorLowest(L, x, y) - DECK]);
+      }
     }
-    const has = new Set(posts.map(([x, y]) => `${x},${y}`));
+    const at = new Map(posts.map((p) => [`${p[0]},${p[1]}`, p]));
     const tubes: THREE.Matrix4[] = [];
-    const height = PITCH_DROP + DECK_BOTTOM;
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const up = new THREE.Vector3(0, 1, 0);
@@ -484,22 +479,24 @@ export class Course {
       m.compose(a.clone().add(b).multiplyScalar(0.5), q, new THREE.Vector3(1, len, 1));
       tubes.push(m.clone());
     };
-    for (const [x, y] of posts) {
-      tube(new THREE.Vector3(x, -PITCH_DROP, y), new THREE.Vector3(x, DECK_BOTTOM, y));
+    for (const [x, y, top] of posts) {
+      tube(new THREE.Vector3(x, pitch, y), new THREE.Vector3(x, top, y));
       for (const [dx, dy] of [
         [2, 0],
         [0, 2],
       ]) {
-        if (!has.has(`${x + dx},${y + dy}`)) continue;
+        const other = at.get(`${x + dx},${y + dy}`);
+        if (!other) continue;
+        const reach = Math.min(top, other[2]) - pitch;
         for (const lvl of [0.3, 0.72]) {
-          const yy = -PITCH_DROP + height * lvl;
+          const yy = pitch + reach * lvl;
           tube(new THREE.Vector3(x, yy, y), new THREE.Vector3(x + dx, yy, y + dy));
         }
         // One diagonal per bay, leaning alternately.
         const flip = ((x + y) / 2) % 2 === 0;
         tube(
-          new THREE.Vector3(flip ? x : x + dx, -PITCH_DROP + height * 0.3, flip ? y : y + dy),
-          new THREE.Vector3(flip ? x + dx : x, -PITCH_DROP + height * 0.72, flip ? y + dy : y),
+          new THREE.Vector3(flip ? x : x + dx, pitch + reach * 0.3, flip ? y : y + dy),
+          new THREE.Vector3(flip ? x + dx : x, pitch + reach * 0.72, flip ? y + dy : y),
         );
       }
     }
@@ -515,7 +512,7 @@ export class Course {
   // ------------------------------------------------------------- frame
 
   /** tick may be fractional; turnstiles follow the game clock exactly. */
-  update(dt: number, time: number, tick: number, ballNearCup: boolean): void {
+  update(dt: number, time: number, tick: number, ballNearCup: boolean, cameraYaw: number): void {
     for (const s of this.scrollers) {
       s.tex.offset.x = (s.tex.offset.x + s.sx * dt) % 1;
       s.tex.offset.y = (s.tex.offset.y + s.sy * dt) % 1;
@@ -528,14 +525,17 @@ export class Course {
       const swing = Math.sin(c.wobble * 22) * c.wobble * 0.5;
       c.mesh.rotation.set(c.az * swing, 0, -c.ax * swing);
     }
-
-    this.rings.forEach((r, i) => {
-      r.scale.setScalar(1 + Math.sin(time * 4 + i) * 0.06);
-    });
+    for (const s of this.springs) {
+      s.kick = Math.max(0, s.kick - dt * 3);
+      s.mesh.scale.y = 1 + Math.sin(s.kick * Math.PI) * 2.2;
+      s.mesh.children[2].position.y = 0.2 + Math.sin(time * 4 + s.x) * 0.04;
+    }
+    this.rings.forEach((r, i) => r.scale.setScalar(1 + Math.sin(time * 4 + i) * 0.06));
+    this.cupDecal.rotation.y = cameraYaw;
 
     // The flag is lifted out of the way when a ball is close, as a caddie would.
     this.flagLift += ((ballNearCup ? 1 : 0) - this.flagLift) * (1 - Math.exp(-dt * 6));
-    this.flag.position.y = topAt(this.level, this.level.cup.x, this.level.cup.y) + this.flagLift * 1.3;
+    this.flag.position.y = this.level.cup.z + this.flagLift * 1.4;
 
     const pos = this.cloth.geometry.getAttribute('position') as THREE.BufferAttribute;
     const arr = pos.array as Float32Array;
@@ -551,7 +551,7 @@ export class Course {
     this.cloth.geometry.computeVertexNormals();
   }
 
-  /** A cone was hit by a ball coming from this spot: rock it. */
+  /** A cone was hit by a ball at this spot: rock it. */
   hitCone(x: number, y: number): void {
     let best = null;
     let bestD = 1;
@@ -569,6 +569,11 @@ export class Course {
     best.az = (best.y - y) / d;
   }
 
+  /** A spring pad at this spot fired. */
+  hitSpring(x: number, y: number): void {
+    for (const s of this.springs) if (Math.hypot(s.x - x, s.y - y) < 1) s.kick = 1;
+  }
+
   dispose(): void {
     this.group.traverse((o) => {
       if (!(o instanceof THREE.Mesh)) return;
@@ -577,4 +582,15 @@ export class Course {
       for (const m of Array.isArray(o.material) ? o.material : [o.material]) m.dispose();
     });
   }
+}
+
+/** The lowest ground at a point, for scaffolding under stacked levels. */
+function floorLowest(L: Level, x: number, y: number): number {
+  let z = topAt(L, x, y);
+  for (let i = 0; i < 6; i++) {
+    const below = floorAt(L, x, y, z - 0.3);
+    if (!Number.isFinite(below)) break;
+    z = below;
+  }
+  return z;
 }

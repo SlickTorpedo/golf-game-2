@@ -415,36 +415,37 @@ function bannerRect(i: number): [number, number, number, number] {
   return [(i % 2) * BANNER_W, BANNER_Y + Math.floor(i / 2) * BANNER_H, BANNER_W, BANNER_H];
 }
 
-// Touchline boards: the small businesses of any Javanese street. [big text, small text, board, paint, accent]
+// Touchline boards: the small businesses of any Javanese street, in English so everyone gets the joke.
+// [big text, small text, board, paint, accent]
 const SIGNS: [string, string, string, string, string][] = [
-  ['TAMBAL BAN', 'TUBELES · NITROGEN', '#d9d2bd', '#a01818', '#1b1b1b'],
-  ['ES TEH', 'JUMBO · 3000', '#e4b21c', '#5b1a10', '#f4ecd2'],
-  ['FOTOKOPI', 'JILID · LAMINATING · ATK', '#e8e6de', '#17408f', '#c22b1e'],
-  ['PULSA 24 JAM', 'KUOTA · TOKEN LISTRIK', '#16233f', '#f0d21a', '#f4f4f4'],
-  ['WARUNG KOPI', 'MBAK YUN · GORENGAN', '#3a2416', '#efe2c0', '#e08a1c'],
-  ['BENGKEL LAS', 'TERALIS · KANOPI · PAGAR', '#c9ccd0', '#101820', '#c2401a'],
-  ['AYAM GEPREK', 'SAMBAL BAWANG', '#b0201a', '#ffe08a', '#ffffff'],
-  ['CUCI MOTOR', 'SALJU · SEMIR BAN', '#2a7fb5', '#ffffff', '#ffe23a'],
-  ['LAUNDRY KILOAN', 'CUCI KERING SETRIKA', '#e9d8ee', '#6a2a86', '#2a2a2a'],
-  ['BAKSO · MIE AYAM', 'PAK DHE', '#efe9d6', '#1f6a2c', '#b01c1c'],
-  ['SEDOT WC', 'TANPA BONGKAR', '#f2e21c', '#161616', '#c81e1e'],
-  ['ISI ULANG GALON', 'AIR MINUM · ANTAR JEMPUT', '#dff0f6', '#145a8c', '#145a8c'],
-  ['SERVIS HP', 'GANTI LCD · BATERAI', '#1c1c1c', '#40e0a0', '#ffffff'],
-  ['TOKO BANGUNAN', 'SEMEN · PASIR · CAT', '#d86a14', '#ffffff', '#1c1c1c'],
-  ['TERIMA KOST', 'PUTRA · KARYAWAN', '#f0efe8', '#1b1b1b', '#1a7a3a'],
-  ['PANGKAS RAMBUT', 'PRIA · AC', '#22306a', '#ffffff', '#e03a2a'],
+  ['TYRE REPAIR', 'FLAT? SO IS YOUR PUTT', '#d9d2bd', '#a01818', '#1b1b1b'],
+  ['ICED TEA', 'JUMBO · EXTRA SWEET', '#e4b21c', '#5b1a10', '#f4ecd2'],
+  ['PHOTOCOPY', 'WE COPY ANYTHING. ANYTHING.', '#e8e6de', '#17408f', '#c22b1e'],
+  ['PHONE CREDIT 24H', 'CALL YOUR MUM', '#16233f', '#f0d21a', '#f4f4f4'],
+  ['COFFEE STALL', 'OPEN TILL THE COFFEE RUNS OUT', '#3a2416', '#efe2c0', '#e08a1c'],
+  ['WELDING', 'GATES · FENCES · REGRETS', '#c9ccd0', '#101820', '#c2401a'],
+  ['SMASHED CHICKEN', 'HOTTER THAN THE DERBY', '#b0201a', '#ffe08a', '#ffffff'],
+  ['BIKE WASH', 'FOAM INCLUDED', '#2a7fb5', '#ffffff', '#ffe23a'],
+  ['LAUNDRY BY THE KILO', 'GRASS STAINS A SPECIALITY', '#e9d8ee', '#6a2a86', '#2a2a2a'],
+  ['MEATBALL SOUP', 'UNCLE KNOWS BEST', '#efe9d6', '#1f6a2c', '#b01c1c'],
+  ['SEPTIC PUMPING', 'NO JOB TOO GRIM', '#f2e21c', '#161616', '#c81e1e'],
+  ['WATER REFILLS', 'WE DELIVER. EVENTUALLY.', '#dff0f6', '#145a8c', '#145a8c'],
+  ['PHONE REPAIR', 'CRACKED SCREENS WHILE YOU WAIT', '#1c1c1c', '#40e0a0', '#ffffff'],
+  ['BUILDING SUPPLIES', 'CEMENT · SAND · OPINIONS', '#d86a14', '#ffffff', '#1c1c1c'],
+  ['ROOMS TO LET', 'QUIET TENANTS ONLY', '#f0efe8', '#1b1b1b', '#1a7a3a'],
+  ['BARBER', 'AIR-CONDITIONED · MOSTLY', '#22306a', '#ffffff', '#e03a2a'],
 ];
 
 // Cloth banners tied to the fence. [text, cloth, paint]
 const BANNERS: [string, string, string][] = [
-  ['KALIWARU SAMPAI TUA', '#5e1216', '#e0a81e'],
-  ['TRIBUN SELATAN TAK PERNAH SEPI', '#d8d2c0', '#5e1216'],
-  ['DILARANG MENYALAKAN FLARE & PETASAN', '#e9e7df', '#b01c1c'],
-  ['BOCAH LOR KALI · SETIA SEJAK 1987', '#16161a', '#e0a81e'],
-  ['JAGALAH KEBERSIHAN · BUANG SAMPAH PADA TEMPATNYA', '#e6e4d8', '#1b4f8a'],
-  ['MENANG KALAH TETAP DI SINI', '#e0a81e', '#3a0c10'],
-  ['KARANG TARUNA RW 07 MENDUKUNG PS KALIWARU', '#1d5a3a', '#f0ecd8'],
-  ['SUPORTER TAMU · TIRTA MUDA', '#1e3f7a', '#f2f2f2'],
+  ['KALIWARU TILL WE ARE OLD', '#5e1216', '#e0a81e'],
+  ['THE SOUTH STAND IS NEVER QUIET', '#d8d2c0', '#5e1216'],
+  ['NO FLARES · NO FIRECRACKERS · NO EXCEPTIONS', '#e9e7df', '#b01c1c'],
+  ['NORTH BANK BOYS · LOYAL SINCE 1987', '#16161a', '#e0a81e'],
+  ['KEEP IT CLEAN · LITTER GOES IN THE BIN', '#e6e4d8', '#1b4f8a'],
+  ['WIN OR LOSE WE ARE STILL HERE', '#e0a81e', '#3a0c10'],
+  ['THE YOUTH CLUB OF BLOCK 7 BACKS KALIWARU', '#1d5a3a', '#f0ecd8'],
+  ['AWAY FANS · TIRTA MUDA', '#1e3f7a', '#f2f2f2'],
 ];
 
 /** One texture for every board, banner and flag, so all cloth is a single draw call. */

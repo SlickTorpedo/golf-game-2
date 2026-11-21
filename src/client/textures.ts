@@ -83,6 +83,10 @@ export function turfTexture(): THREE.CanvasTexture {
     });
   }
 
+  // Mowing bands: the tile is laid over four units of ground, two bands to a tile.
+  g.fillStyle = 'rgba(0,30,10,0.16)';
+  g.fillRect(0, 0, size / 2, size);
+
   // Black rubber crumb that works its way up through artificial turf.
   for (let i = 0; i < 2200; i++) {
     g.fillStyle = `rgba(20,26,22,${0.15 + r() * 0.3})`;
@@ -220,70 +224,148 @@ export function chevronTexture(): THREE.CanvasTexture {
   return finish(cv);
 }
 
-/**
- * The LED boards. Greyscale: white is fully lit and takes the board's colour
- * from the mesh, near black is unlit. Panels alternate between lit with dark
- * lettering and dark with lit lettering, the way cheap perimeter boards cycle.
- * The words are the hand-painted signs of any Javanese roadside.
- */
-export function boardTexture(): THREE.CanvasTexture {
-  const w = 4096;
+/** Made-up sponsors. Each is a panel four times as wide as it is tall. */
+const ADS: { bg: string; fg: string; accent: string; brand: string; line: string }[] = [
+  { bg: '#ff2e93', fg: '#ffffff', accent: '#2a0a1c', brand: 'GOAT COLA', line: "it's baaad. in a good way." },
+  { bg: '#101216', fg: '#d9ff2e', accent: '#ffffff', brand: 'SLAMET TYRES', line: 'we fix flat shots too' },
+  { bg: '#2ee6ff', fg: '#06222b', accent: '#ffffff', brand: "RINI'S ICED TEA", line: 'sweeter than a hole in one' },
+  { bg: '#ff7a1a', fg: '#1d0d00', accent: '#ffffff', brand: 'FLIP-FLOP KING', line: 'lose one, buy three' },
+  { bg: '#f4f4ef', fg: '#101216', accent: '#ff2e93', brand: 'BANK OF BOGEY', line: 'we forgive nothing' },
+  { bg: '#d9ff2e', fg: '#141a00', accent: '#ff2e93', brand: 'BOILED PEANUTS', line: 'salted. undefeated.' },
+  { bg: '#16235a', fg: '#ffffff', accent: '#2ee6ff', brand: 'LOST YOUR BALL?', line: "it's in the water. sorry." },
+  { bg: '#a98bff', fg: '#160a3a', accent: '#ffffff', brand: 'KALIWARU FC', line: 'next home game: probably raining' },
+];
+export const AD_COUNT = ADS.length;
+
+/** The advertising boards: one strip of panels, lit like cheap LED screens. */
+export function adTexture(): THREE.CanvasTexture {
+  const pw = 512;
   const h = 128;
-  const [cv, g] = canvas(w, h);
-  const words = [
-    'TAMBAL BAN',
-    'ES TEH',
-    'FOTOKOPI',
-    'PULSA 24 JAM',
-    'WARUNG KOPI',
-    'SOTO AYAM',
-    'BENGKEL',
-    'PARKIR',
-  ];
-  g.fillStyle = '#0c0c0c';
-  g.fillRect(0, 0, w, h);
-  g.textBaseline = 'middle';
+  const [cv, g] = canvas(pw * ADS.length, h);
   g.textAlign = 'center';
-  const panel = w / words.length;
-  words.forEach((word, i) => {
-    const x0 = i * panel;
-    const lit = i % 3 !== 1;
-    g.fillStyle = lit ? '#f4f4f4' : '#101010';
-    g.fillRect(x0 + 6, 10, panel - 12, h - 20);
-    g.fillStyle = lit ? '#0d0d0d' : '#ffffff';
-    g.font = 'italic 800 84px "Barlow Condensed", "Arial Narrow", sans-serif';
-    const width = g.measureText(word).width;
-    const squeeze = Math.min(1, (panel - 70) / width);
+  g.textBaseline = 'alphabetic';
+  ADS.forEach((ad, i) => {
+    const x0 = i * pw;
+    g.fillStyle = ad.bg;
+    g.fillRect(x0, 0, pw, h);
+    // A slanted flash behind the name, so each board has a shape as well as words.
+    g.fillStyle = ad.accent;
+    g.globalAlpha = 0.22;
+    g.beginPath();
+    g.moveTo(x0 + 30, h);
+    g.lineTo(x0 + 110, 0);
+    g.lineTo(x0 + 190, 0);
+    g.lineTo(x0 + 110, h);
+    g.fill();
+    g.globalAlpha = 1;
+    g.fillStyle = ad.fg;
+    g.font = 'italic 800 78px "Barlow Condensed", "Arial Narrow", sans-serif';
+    const squeeze = Math.min(1, (pw - 50) / g.measureText(ad.brand).width);
     g.save();
-    g.translate(x0 + panel / 2, h / 2 + 4);
+    g.translate(x0 + pw / 2, 80);
     g.scale(squeeze, 1);
-    g.fillText(word, 0, 0);
+    g.fillText(ad.brand, 0, 0);
     g.restore();
+    g.font = '600 25px "Barlow Condensed", "Arial Narrow", sans-serif';
+    g.fillText(ad.line.toUpperCase(), x0 + pw / 2, 112);
+    // Frame between panels.
+    g.fillStyle = '#0b0c10';
+    g.fillRect(x0, 0, 5, h);
+    g.fillRect(x0 + pw - 5, 0, 5, h);
+    g.fillRect(x0, 0, pw, 6);
+    g.fillRect(x0, h - 5, pw, 5);
   });
   // The gaps between LEDs.
-  g.fillStyle = 'rgba(0,0,0,0.22)';
-  for (let x = 0; x < w; x += 4) g.fillRect(x, 0, 1, h);
-  for (let y = 0; y < h; y += 4) g.fillRect(0, y, w, 1);
+  g.fillStyle = 'rgba(0,0,0,0.13)';
+  for (let x = 0; x < cv.width; x += 4) g.fillRect(x, 0, 1, h);
+  for (let y = 0; y < h; y += 4) g.fillRect(0, y, cv.width, 1);
   const tex = finish(cv);
   tex.wrapT = THREE.ClampToEdgeWrapping;
   return tex;
 }
 
-/** Top of a board: a moulded plastic cap with a dark seam round each panel and a row of vents. */
-export function lidTexture(): THREE.CanvasTexture {
+/** Racetrack kerb: red and white blocks, scuffed. */
+export function kerbTexture(): THREE.CanvasTexture {
+  const [cv, g] = canvas(256, 32);
+  const r = rng(61);
+  for (let i = 0; i < 4; i++) {
+    g.fillStyle = i % 2 ? '#f3f3ee' : '#e23a2e';
+    g.fillRect(i * 64, 0, 64, 32);
+  }
+  for (let i = 0; i < 500; i++) {
+    g.fillStyle = `rgba(20,20,24,${0.05 + r() * 0.2})`;
+    g.fillRect(r() * 256, r() * 32, 1 + r() * 5, 1);
+  }
+  return finish(cv);
+}
+
+/** Ice: pale, with skate-like scratches. */
+export function iceTexture(): THREE.CanvasTexture {
+  const size = 512;
+  const [cv, g] = canvas(size, size);
+  const r = rng(71);
+  g.fillStyle = '#cfefff';
+  g.fillRect(0, 0, size, size);
+  for (let i = 0; i < 60; i++) {
+    const x = r() * size;
+    const y = r() * size;
+    const rad = 30 + r() * 90;
+    tiled(size, x, y, rad, (px, py) => {
+      const grad = g.createRadialGradient(px, py, 0, px, py, rad);
+      grad.addColorStop(0, r() > 0.5 ? 'rgba(255,255,255,0.35)' : 'rgba(120,190,230,0.3)');
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = grad;
+      g.fillRect(px - rad, py - rad, rad * 2, rad * 2);
+    });
+  }
+  for (let i = 0; i < 160; i++) {
+    g.strokeStyle = `rgba(255,255,255,${0.2 + r() * 0.5})`;
+    g.lineWidth = 0.6 + r();
+    const x = r() * size;
+    const y = r() * size;
+    const a = r() * Math.PI;
+    const len = 20 + r() * 120;
+    g.beginPath();
+    g.moveTo(x, y);
+    g.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len);
+    g.stroke();
+  }
+  return finish(cv);
+}
+
+/**
+ * The cup seen from above: a dark hole with the far inside wall catching the
+ * light. The course turns it to face the camera, so it reads as depth.
+ */
+export function cupTexture(): THREE.CanvasTexture {
   const size = 128;
   const [cv, g] = canvas(size, size);
-  g.fillStyle = '#e9e9e9';
-  g.fillRect(0, 0, size, size);
-  g.strokeStyle = '#1c1c1c';
-  g.lineWidth = 7;
-  g.strokeRect(0, 0, size, size);
-  g.strokeStyle = 'rgba(255,255,255,0.9)';
-  g.lineWidth = 2;
-  g.strokeRect(9, 9, size - 18, size - 18);
-  g.fillStyle = 'rgba(20,20,20,0.55)';
-  for (let i = 0; i < 5; i++) g.fillRect(34 + i * 13, 54, 7, 20);
-  return finish(cv);
+  const c = size / 2;
+  g.clearRect(0, 0, size, size);
+  g.fillStyle = '#05060a';
+  g.beginPath();
+  g.arc(c, c, c - 2, 0, Math.PI * 2);
+  g.fill();
+  // Lit far wall: a crescent along the top edge.
+  g.save();
+  g.beginPath();
+  g.arc(c, c, c - 2, 0, Math.PI * 2);
+  g.clip();
+  const grad = g.createLinearGradient(0, 0, 0, size * 0.55);
+  grad.addColorStop(0, 'rgba(210,216,228,0.95)');
+  grad.addColorStop(1, 'rgba(60,66,80,0)');
+  g.fillStyle = grad;
+  g.beginPath();
+  g.arc(c, c, c - 2, 0, Math.PI * 2);
+  g.arc(c, c + size * 0.2, c - 2, 0, Math.PI * 2, true);
+  g.fill('evenodd');
+  g.restore();
+  g.strokeStyle = '#ffffff';
+  g.lineWidth = 4;
+  g.beginPath();
+  g.arc(c, c, c - 3, 0, Math.PI * 2);
+  g.stroke();
+  return finish(cv, false);
 }
 
 /** A ball in the player's colour with a white band and two caps, so you can see it roll. */

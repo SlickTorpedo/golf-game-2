@@ -1,72 +1,13 @@
-import { BALL_R, LEVEL_H, MAX_PUTT, MIN_PUTT, SLOPE_ACCEL, STEP_UP } from './constants';
-import { DIRS, Level, cellAt, topAt } from './level';
+import { BALL_R, MAX_PUTT, MIN_PUTT, SLOPE_ACCEL, STEP_UP } from './constants';
+import { Level, WALL_HALF, floorAt } from './level';
 import { Ball, rollDistance } from './physics';
 
-/** For every cell, the next cell on the shortest walk to the cup (-1 if none). */
-export interface Nav {
-  next: Int32Array;
-}
+// Bots follow the hole's route: the list of points its builder laid down from
+// tee to cup. From wherever the ball is, a bot putts at the furthest route
+// point it can reach in a straight roll.
 
-export function buildNav(L: Level): Nav {
-  const n = L.w * L.h;
-  const reverse: number[][] = Array.from({ length: n }, () => []);
-  const walkable = (cx: number, cy: number) => {
-    const k = cellAt(L, cx, cy).kind;
-    return k === 'floor' || k === 'ramp';
-  };
-
-  for (let cy = 0; cy < L.h; cy++) {
-    for (let cx = 0; cx < L.w; cx++) {
-      if (!walkable(cx, cy)) continue;
-      const a = cy * L.w + cx;
-      const cell = cellAt(L, cx, cy);
-      for (const [dx, dy] of DIRS) {
-        const bx = cx + dx;
-        const by = cy + dy;
-        if (walkable(bx, by)) {
-          // Compare heights on both sides of the shared edge.
-          const ex = cx + 0.5 + dx * 0.5;
-          const ey = cy + 0.5 + dy * 0.5;
-          const ha = topAt(L, ex - dx * 0.01, ey - dy * 0.01);
-          const hb = topAt(L, ex + dx * 0.01, ey + dy * 0.01);
-          if (hb <= ha + STEP_UP) reverse[by * L.w + bx].push(a);
-        } else if (cell.surface === 'track' && DIRS[cell.dir][0] === dx && DIRS[cell.dir][1] === dy) {
-          // Track that ends over nothing throws the ball across a short gap.
-          for (let i = 2; i <= 4; i++) {
-            const jx = cx + dx * i;
-            const jy = cy + dy * i;
-            if (walkable(jx, jy)) {
-              if (cellAt(L, jx, jy).h <= cell.h) reverse[jy * L.w + jx].push(a);
-              break;
-            }
-          }
-        }
-      }
-    }
-  }
-
-  for (const t of L.tunnels) {
-    reverse[Math.floor(t.ty) * L.w + Math.floor(t.tx)].push(Math.floor(t.y) * L.w + Math.floor(t.x));
-  }
-
-  const next = new Int32Array(n).fill(-1);
-  const seen = new Uint8Array(n);
-  const start = Math.floor(L.cup.y) * L.w + Math.floor(L.cup.x);
-  const queue = [start];
-  seen[start] = 1;
-  for (let i = 0; i < queue.length; i++) {
-    const b = queue[i];
-    for (const a of reverse[b]) {
-      if (seen[a]) continue;
-      seen[a] = 1;
-      next[a] = b;
-      queue.push(a);
-    }
-  }
-  return { next };
-}
-
-function clearLine(L: Level, x0: number, y0: number, x1: number, y1: number): boolean {
+/** Can a ball roll straight from one point to the other? */
+function clearLine(L: Level, x0: number, y0: number, z0: number, x1: number, y1: number): boolean {
   const len = Math.hypot(x1 - x0, y1 - y0);
   if (len < 1e-6) return true;
   const ux = (x1 - x0) / len;
@@ -74,12 +15,25 @@ function clearLine(L: Level, x0: number, y0: number, x1: number, y1: number): bo
   for (const side of [-BALL_R, 0, BALL_R]) {
     const ox = -uy * side;
     const oy = ux * side;
-    let prev = topAt(L, x0 + ox, y0 + oy);
-    if (prev === -Infinity) prev = topAt(L, x0, y0);
-    for (let d = 0.08; d <= len; d += 0.08) {
-      const top = topAt(L, x0 + ox + ux * d, y0 + oy + uy * d);
-      if (top === -Infinity || top > prev + STEP_UP) return false;
-      prev = top;
+    let prev = z0;
+    for (let d = 0.1; d <= len; d += 0.1) {
+      const x = x0 + ox + ux * d;
+      const y = y0 + oy + uy * d;
+      const h = floorAt(L, x, y, prev + 0.2);
+      if (!Number.isFinite(h) || Math.abs(h - prev) > 0.3) return false;
+      prev = h;
+      const col = Math.floor(x - L.minX);
+      const row = Math.floor(y - L.minY);
+      for (const i of L.colGrid[row * L.cols + col] ?? []) {
+        const c = L.colliders[i];
+        const ex = c.bx - c.ax;
+        const ey = c.by - c.ay;
+        const t = Math.max(0, Math.min(1, ((x - c.ax) * ex + (y - c.ay) * ey) / (ex * ex + ey * ey || 1)));
+        const top = c.ta + (c.tb - c.ta) * t;
+        const reach = c.kind === 'cliff' ? 0.02 : WALL_HALF;
+        if (Math.hypot(x - c.ax - ex * t, y - c.ay - ey * t) > reach) continue;
+        if (c.kind === 'cliff' ? h + STEP_UP < top : h < top && h > top - 1) return false;
+      }
     }
   }
   return true;
@@ -97,37 +51,51 @@ function speedFor(distance: number): number {
 }
 
 /** Returns a putt vector whose length is the power, 0..1. */
-export function planPutt(L: Level, nav: Nav, ball: Ball, rand: () => number): { dx: number; dy: number } {
-  const cupCell = Math.floor(L.cup.y) * L.w + Math.floor(L.cup.x);
-  let cell = Math.floor(ball.y) * L.w + Math.floor(ball.x);
-  let tx = L.cup.x;
-  let ty = L.cup.y;
-  let atCup = true;
+export function planPutt(L: Level, ball: Ball, rand: () => number): { dx: number; dy: number } {
+  const line = L.line;
+  const last = line.length - 1;
+  const dist = (k: number) => Math.hypot(line[k].x - ball.x, line[k].y - ball.y);
 
-  if (cell !== cupCell && cell >= 0 && cell < nav.next.length && nav.next[cell] !== -1) {
-    let found = false;
-    for (let i = 0; i < 16 && cell !== -1; i++) {
-      cell = nav.next[cell];
-      if (cell === -1) break;
-      const isCup = cell === cupCell;
-      const cx = isCup ? L.cup.x : (cell % L.w) + 0.5;
-      const cy = isCup ? L.cup.y : Math.floor(cell / L.w) + 0.5;
-      if (clearLine(L, ball.x, ball.y, cx, cy) || !found) {
-        tx = cx;
-        ty = cy;
-        atCup = isCup;
-        found = true;
-      }
-      if (isCup) break;
+  // Where on the route is the ball? Prefer points on its own level.
+  let near = 0;
+  let best = Infinity;
+  for (let k = 0; k <= last; k++) {
+    const d = dist(k) + (Math.abs(line[k].z - ball.z) > 0.8 ? 100 : 0);
+    if (d < best) {
+      best = d;
+      near = k;
     }
   }
 
-  const dist = Math.hypot(tx - ball.x, ty - ball.y);
-  const climb = Math.max(0, topAt(L, tx, ty) - ball.z) / LEVEL_H;
-  const flat = speedFor(atCup ? dist + 0.25 : dist * 1.15 + 0.3);
-  let speed = Math.sqrt(flat * flat + 2 * SLOPE_ACCEL * climb);
-  speed *= 1 + (rand() - 0.5) * 0.2;
-  const angle = Math.atan2(ty - ball.y, tx - ball.x) + (rand() - 0.5) * 0.14;
-  const power = Math.min(1, Math.max(0.03, (speed - MIN_PUTT) / (MAX_PUTT - MIN_PUTT)));
+  let target = Math.min(last, dist(near) < 0.7 ? near + 1 : near);
+  let fixedPower: number | undefined;
+  const leap = line[near + 1]?.power;
+  if (leap !== undefined && dist(near) < 1.5) {
+    // The next stretch is flown, not rolled: putt it as the designer said.
+    target = near + 1;
+    fixedPower = leap;
+  } else {
+    for (let k = target; k <= Math.min(last, near + 7); k++) {
+      if (line[k].power !== undefined) break;
+      if (clearLine(L, ball.x, ball.y, ball.z, line[k].x, line[k].y)) target = k;
+    }
+  }
+
+  const t = line[target];
+  const atCup = target === last;
+  const d = Math.hypot(t.x - ball.x, t.y - ball.y);
+  let power: number;
+  if (fixedPower !== undefined) {
+    power = fixedPower * (1 + (rand() - 0.5) * 0.08);
+  } else {
+    const flat = speedFor(atCup ? d + 0.25 : d * 1.12 + 0.3);
+    // A climb needs more speed. A drop gives none back: most are steps, not slopes.
+    const climb = Math.max(0, t.z - ball.z);
+    const need = flat * flat + 2 * SLOPE_ACCEL * climb;
+    const speed = Math.sqrt(need) * (1 + (rand() - 0.5) * 0.2);
+    power = (speed - MIN_PUTT) / (MAX_PUTT - MIN_PUTT);
+  }
+  power = Math.min(1, Math.max(0.03, power));
+  const angle = Math.atan2(t.y - ball.y, t.x - ball.x) + (rand() - 0.5) * 0.12;
   return { dx: Math.cos(angle) * power, dy: Math.sin(angle) * power };
 }

@@ -6,7 +6,7 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { BALL_R, PITCH_DROP } from '../shared/constants';
-import { Level, topAt } from '../shared/level';
+import type { Level } from '../shared/level';
 import type { HitMaterial } from '../shared/physics';
 import type { ItemKind, Pickup } from '../shared/protocol';
 import { Course, CourseTextures } from './course';
@@ -22,9 +22,15 @@ export const ITEM_COLORS: Record<ItemKind, number> = {
 };
 
 const NIGHT = 0x070b1c;
-const FOV = 36;
-const MIN_PITCH = 0.2;
-const MAX_PITCH = 1.38;
+const FOV = 40;
+const MIN_PITCH = 0.16;
+const MAX_PITCH = 1.45;
+
+/** follow: low and close behind your ball. wide: the whole hole. top: straight down. */
+export type View = 'follow' | 'wide' | 'top';
+const VIEW_PITCH: Record<View, number> = { follow: 0.45, wide: 0.82, top: 1.45 };
+/** The follow view is wider-angled than the others, so more course fits in at close range. */
+const FOLLOW_FOV = 48;
 const AIM_DOTS = 44;
 
 export interface BallView {
@@ -79,10 +85,13 @@ export class World {
   private readonly size = new THREE.Vector2();
 
   // ---- camera rig
-  /** 'title' drifts round the hole, 'overview' frames all of it, 'play' stays with your ball. */
+  /** 'title' drifts round the hole, 'overview' frames all of it, 'play' uses the chosen view. */
   mode: 'title' | 'overview' | 'play' = 'title';
-  /** Your ball, in map coordinates, while playing. */
+  view: View = 'follow';
+  /** Your ball, in map coordinates, while playing, and how it is moving. */
   follow: { x: number; y: number; z: number } | null = null;
+  followVel = { x: 0, y: 0 };
+  private fov = FOV;
   /** Slide the picture sideways / upward by this share of the screen. */
   shift = 0;
   lift = 0;
@@ -151,8 +160,10 @@ export class World {
       mud: paint.mudTexture(),
       track: paint.trackTexture(),
       chevron: paint.chevronTexture(),
-      board: paint.boardTexture(),
-      lid: paint.lidTexture(),
+      ice: paint.iceTexture(),
+      ads: paint.adTexture(),
+      kerb: paint.kerbTexture(),
+      cup: paint.cupTexture(),
       ripple: paint.rippleTexture(),
     };
     this.particles = new Particles(paint.sparkTexture());
@@ -202,7 +213,19 @@ export class World {
   }
 
   private placeBackdrop(): void {
-    if (this.backdrop && this.level) this.backdrop.group.position.set(this.level.w / 2, -PITCH_DROP, this.level.h / 2);
+    if (!this.backdrop || !this.level) return;
+    const c = this.centre();
+    this.backdrop.group.position.set(c.x, this.level.minZ - PITCH_DROP, c.z);
+  }
+
+  /** Middle of the hole and the radius of a circle round all of it, in scene coordinates. */
+  private centre(): { x: number; y: number; z: number; r: number } {
+    const L = this.level;
+    if (!L) return { x: 0, y: 0, z: 0, r: 8 };
+    // The level's bounds carry two units of padding on every side.
+    const w = L.maxX - L.minX - 4;
+    const h = L.maxY - L.minY - 4;
+    return { x: (L.minX + L.maxX) / 2, y: (L.minZ + L.maxZ) / 2, z: (L.minY + L.maxY) / 2, r: Math.hypot(w, h) / 2 };
   }
 
   // ------------------------------------------------------------- the hole
@@ -219,9 +242,10 @@ export class World {
     this.scene.add(this.course.group);
     this.placeBackdrop();
 
-    const cx = L.w / 2;
-    const cy = L.h / 2;
-    const r = Math.hypot(L.w, L.h) / 2 + 3;
+    const c = this.centre();
+    const cx = c.x;
+    const cy = c.z;
+    const r = c.r + 3;
     const spots = [
       [-0.55, 1.5, -0.8],
       [0.8, 1.3, 0.45],
@@ -238,30 +262,48 @@ export class World {
     });
   }
 
-  /** Swing round to the corner view with the tee nearest, arriving with a short sweep. */
+  /** Open a hole: come in low across the stadium, then settle behind the tee looking down the route. */
   frameHole(): void {
-    if (!this.level) return;
-    const vx = this.level.tee.x - this.level.cup.x;
-    const vy = this.level.tee.y - this.level.cup.y;
-    let best = 0;
-    let bestDot = -Infinity;
-    for (let k = 0; k < 4; k++) {
-      const yaw = Math.PI / 4 + (k * Math.PI) / 2;
-      const dot = Math.sin(yaw) * vx + Math.cos(yaw) * vy;
-      if (dot > bestDot) {
-        bestDot = dot;
-        best = yaw;
-      }
-    }
-    // Take the short way round from wherever the camera is now.
-    this.yawGoal += Math.atan2(Math.sin(best - this.yawGoal), Math.cos(best - this.yawGoal));
-    this.yaw = this.yawGoal - 0.7;
-    // Start low, looking across at the stands, then rise over the hole.
-    this.pitchGoal = 0.62;
-    this.pitch = 0.26;
-    this.dist = this.fitDistance() * 1.35;
+    const L = this.level;
+    if (!L) return;
+    const next = L.line[Math.min(1, L.line.length - 1)];
+    this.faceAlong(next.x - L.tee.x, next.y - L.tee.y);
+    this.yaw = this.yawGoal - 0.8;
+    this.pitchGoal = VIEW_PITCH[this.view];
+    this.pitch = 0.24;
+    this.dist = this.fitDistance() * 1.3;
     this.zoomFactor = 1;
-    this.look.set(this.level.w / 2, 0, this.level.h / 2);
+    const c = this.centre();
+    this.look.set(c.x, c.y, c.z);
+  }
+
+  /** Turn so the camera looks along this map direction (it ends up behind the ball). */
+  faceAlong(dx: number, dy: number): void {
+    if (Math.hypot(dx, dy) < 1e-3) return;
+    const want = Math.atan2(-dx, -dy);
+    // Take the short way round from wherever the camera is now.
+    this.yawGoal += Math.atan2(Math.sin(want - this.yawGoal), Math.cos(want - this.yawGoal));
+  }
+
+  setView(view: View): void {
+    this.view = view;
+    this.pitchGoal = VIEW_PITCH[view];
+    this.zoomFactor = 1;
+  }
+
+  /**
+   * Turn a drag on screen into a direction on the ground: pulling down the
+   * screen points away from the camera, pulling left points right.
+   */
+  aimDir(dxPx: number, dyPx: number): { x: number; y: number } {
+    const fx = -Math.sin(this.yaw);
+    const fy = -Math.cos(this.yaw);
+    const rx = Math.cos(this.yaw);
+    const ry = -Math.sin(this.yaw);
+    const x = fx * dyPx - rx * dxPx;
+    const y = fy * dyPx - ry * dxPx;
+    const len = Math.hypot(x, y) || 1;
+    return { x: x / len, y: y / len };
   }
 
   /** Drag to look around: pixels moved. */
@@ -271,7 +313,7 @@ export class World {
   }
 
   zoomBy(factor: number): void {
-    this.zoomFactor = Math.min(1.5, Math.max(0.4, this.zoomFactor * factor));
+    this.zoomFactor = Math.min(1.8, Math.max(0.45, this.zoomFactor * factor));
   }
 
   /** Distance from which the whole hole fits on screen. */
@@ -280,8 +322,9 @@ export class World {
     const aspect = this.size.x / this.size.y;
     const halfV = THREE.MathUtils.degToRad(FOV / 2) * (1 - Math.abs(this.lift) * 2);
     const halfH = Math.atan(Math.tan(THREE.MathUtils.degToRad(FOV / 2)) * aspect) * (1 - Math.abs(this.shift) * 2);
-    const r = Math.hypot(this.level.w, this.level.h) / 2 + 0.8;
-    return r / Math.sin(Math.min(halfV, halfH));
+    const r = this.centre().r + 0.8;
+    // Holes are rarely as big as the circle round them, so stand a little closer than that needs.
+    return (r / Math.sin(Math.min(halfV, halfH))) * 0.78;
   }
 
   // ------------------------------------------------------- moving things
@@ -320,7 +363,7 @@ export class World {
         if (rig.sink < 0) rig.sink = 0;
         rig.sink += dt;
         const t = Math.min(1, rig.sink / 0.32);
-        p.set(L.cup.x, topAt(L, L.cup.x, L.cup.y) + BALL_R - t * t * 0.46, L.cup.y);
+        p.set(L.cup.x, L.cup.z + BALL_R - t * t * 0.46, L.cup.y);
         rig.group.visible = rig.sink < 0.9;
       } else {
         rig.sink = -1;
@@ -367,7 +410,7 @@ export class World {
       if (!g || g.userData.kind !== k.kind) {
         if (g) this.scene.remove(g);
         g = buildPickup(k.kind);
-        g.position.set(k.x, topAt(this.level, k.x, k.y), k.y);
+        g.position.set(k.x, k.z, k.y);
         this.scene.add(g);
         this.pickups.set(k.id, g);
       }
@@ -475,6 +518,11 @@ export class World {
     if (material === 'cone') this.course?.hitCone(x, y);
   }
 
+  springFx(x: number, y: number, z: number): void {
+    this.course?.hitSpring(x, y);
+    this.sparkleFx(x, y, z, 0xffd21f, 18);
+  }
+
   landFx(x: number, y: number, z: number, speed: number): void {
     this.particles.burst({
       at: new THREE.Vector3(x, z + 0.03, y),
@@ -490,7 +538,7 @@ export class World {
   holedFx(color: number): void {
     const L = this.level;
     if (!L) return;
-    const z = topAt(L, L.cup.x, L.cup.y);
+    const z = L.cup.z;
     this.particles.burst({
       at: new THREE.Vector3(L.cup.x, z + 0.05, L.cup.y),
       count: 90,
@@ -535,9 +583,8 @@ export class World {
 
   render(dt: number, tick: number, ballNearCup: boolean): void {
     this.time += dt;
-    const c = this.renderer.domElement;
-    if (c.clientWidth !== this.size.x || c.clientHeight !== this.size.y) this.resize();
-    const L = this.level;
+    const el = this.renderer.domElement;
+    if (el.clientWidth !== this.size.x || el.clientHeight !== this.size.y) this.resize();
 
     // ---- camera
     const ease = 1 - Math.exp(-dt * 5);
@@ -545,26 +592,54 @@ export class World {
     this.shiftNow += (this.shift - this.shiftNow) * ease;
     this.liftNow += (this.lift - this.liftNow) * ease;
     const fit = this.fitDistance();
+    const c = this.centre();
+    const focus = new THREE.Vector3(c.x, c.y, c.z);
     let distGoal = fit;
-    const focus = new THREE.Vector3(L ? L.w / 2 : 0, 0, L ? L.h / 2 : 0);
+    let pitchGoal = this.pitchGoal;
+    let fovGoal = FOV;
+    let quick = false;
     if (this.mode === 'title') {
       distGoal = fit * 1.08;
-      this.pitchGoal = 0.33;
+      pitchGoal = 0.33;
     } else if (this.mode === 'play' && this.follow) {
-      distGoal = Math.min(fit, 27) * this.zoomFactor;
-      // The closer in, the more the camera stays with the ball rather than the hole.
-      const stay = Math.min(1, Math.max(0, (fit / distGoal - 1) * 1.4));
-      focus.lerp(new THREE.Vector3(this.follow.x, this.follow.z, this.follow.y), stay);
+      quick = true;
+      if (this.view === 'follow') {
+        // Stay with the ball. Pull in and drop a little while it rolls, ease back out when it
+        // stops, and stand back a touch while the player lines up a putt.
+        const speed = Math.hypot(this.followVel.x, this.followVel.y);
+        const rolling = Math.min(1, speed / 6);
+        distGoal = 7 * this.zoomFactor * (1 - 0.2 * rolling);
+        pitchGoal -= 0.1 * rolling;
+        fovGoal = FOLLOW_FOV + 5 * rolling;
+        // At rest, look a little way down the line of sight so the ball sits low in the frame
+        // with the course ahead of it. Rolling, look where the ball will be in a third of a second.
+        const ahead = 1.6 * (1 - rolling);
+        const lead = Math.min(3, speed * 0.35) / (speed || 1);
+        focus.set(
+          this.follow.x - Math.sin(this.yaw) * ahead + this.followVel.x * lead,
+          this.follow.z + 0.3,
+          this.follow.y - Math.cos(this.yaw) * ahead + this.followVel.y * lead,
+        );
+      } else {
+        distGoal = fit * this.zoomFactor;
+        // Zoomed in on a wide view, drift toward the ball so it stays in frame.
+        const stay = Math.min(1, Math.max(0, (1 / this.zoomFactor - 1) * 1.4));
+        focus.lerp(new THREE.Vector3(this.follow.x, this.follow.z, this.follow.y), stay);
+      }
     }
-    distGoal = Math.min(52, distGoal);
-    const turn = 1 - Math.exp(-dt * (this.mode === 'play' ? 12 : 2.2));
+    distGoal = Math.min(56, distGoal);
+    pitchGoal = Math.min(MAX_PITCH, Math.max(MIN_PITCH, pitchGoal));
+    const turn = 1 - Math.exp(-dt * (quick ? 10 : 2.2));
     this.yaw += (this.yawGoal - this.yaw) * turn;
-    this.pitch += (this.pitchGoal - this.pitch) * turn;
-    this.dist += (distGoal - this.dist) * (1 - Math.exp(-dt * 3.5));
-    this.look.lerp(focus, 1 - Math.exp(-dt * 4));
+    this.pitch += (pitchGoal - this.pitch) * (1 - Math.exp(-dt * (quick ? 4 : 2.2)));
+    // Closing in is quicker than backing off, so the pull-back after a putt is unhurried.
+    this.dist += (distGoal - this.dist) * (1 - Math.exp(-dt * (distGoal < this.dist ? 3.2 : 1.6)));
+    this.fov += (fovGoal - this.fov) * (1 - Math.exp(-dt * 3));
+    this.look.lerp(focus, 1 - Math.exp(-dt * (quick ? 7 : 3)));
 
     const cam = this.camera;
     cam.aspect = this.size.x / this.size.y;
+    cam.fov = this.fov;
     cam.position
       .set(Math.sin(this.yaw) * Math.cos(this.pitch), Math.sin(this.pitch), Math.cos(this.yaw) * Math.cos(this.pitch))
       .multiplyScalar(this.dist)
@@ -583,7 +658,7 @@ export class World {
     cam.updateProjectionMatrix();
 
     // ---- things that move by themselves
-    this.course?.update(dt, this.time, tick, ballNearCup);
+    this.course?.update(dt, this.time, tick, ballNearCup, this.yaw);
     this.backdrop?.update(dt, this.time);
     this.particles.update(dt);
     this.pulses = this.pulses.filter((p) => {
